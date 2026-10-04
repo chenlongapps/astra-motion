@@ -1,6 +1,25 @@
 import path from 'node:path';
-import { open } from 'node:fs/promises';
+import { open, readdir, readFile, writeFile } from 'node:fs/promises';
 import { crc32 } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { root } from './render-options.mjs';
+
+export async function frameCacheMetadata({ width, height, fps, frames }) {
+  const hash = createHash('sha256');
+  for (const directory of ['src', 'public/fonts']) {
+    for (const name of (await readdir(path.join(root, directory))).sort()) {
+      if (directory === 'src' && !/\.(js|json)$/.test(name)) continue;
+      hash.update(`${directory}/${name}\0`); hash.update(await readFile(path.join(root, directory, name)));
+    }
+  }
+  return { version: 1, width, height, fps, frames, sourceSha256: hash.digest('hex') };
+}
+
+export async function writeFrameCacheMetadata(directory, profile) {
+  const metadata = await frameCacheMetadata(profile);
+  if (profile.sourceSha256 && profile.sourceSha256 !== metadata.sourceSha256) throw new Error('Rendering source changed during frame generation or verification. Regenerate the frame cache.');
+  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(metadata, null, 2) + '\n');
+}
 
 export function pngDimensions(header) {
   if (header.length < 33 || !header.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || header.readUInt32BE(8) !== 13 || header.toString('ascii', 12, 16) !== 'IHDR') throw new Error('Invalid PNG header.');
@@ -12,8 +31,21 @@ export function pngDimensions(header) {
 }
 
 // Inspect every PNG before encoding or partially refreshing a cached sequence.
-// Serial metadata reads keep memory bounded even for 900 full-size 4K frames.
-export async function checkFrameCache(directory, { width, height }, count) {
+// Serial metadata reads keep memory bounded even for full-size 4K sequences.
+export async function checkFrameCache(directory, profile, count = profile.frames, { allowStaleSource = false } = {}) {
+  const { width, height } = profile;
+  if (profile.fps !== undefined) {
+    try {
+      const actual = JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8'));
+      const expected = await frameCacheMetadata({ ...profile, frames: count });
+      for (const key of Object.keys(expected)) {
+        if (key === 'sourceSha256' && allowStaleSource) continue;
+        if (actual[key] !== expected[key]) throw new Error(`Cache ${key} does not match the selected output or current source.`);
+      }
+    } catch (error) {
+      throw new Error(`Invalid frame cache metadata: ${error.message}\nGenerate a complete --keep-frames sequence at the selected --resolution and --fps.`, { cause: error });
+    }
+  }
   for (let frame = 0; frame < count; frame++) {
     const file = path.join(directory, `${String(frame).padStart(4, '0')}.png`);
     try {
@@ -28,7 +60,7 @@ export async function checkFrameCache(directory, { width, height }, count) {
         if (info.width !== width || info.height !== height) throw new Error(`Expected ${width}×${height} PNG; found ${info.width}×${info.height} PNG.`);
       } finally { await handle.close(); }
     } catch (error) {
-      throw new Error(`Invalid cached frame ${file}: ${error.message}\nGenerate a complete sequence with --keep-frames at the selected --resolution first.`, { cause: error });
+      throw new Error(`Invalid cached frame ${file}: ${error.message}\nGenerate a complete sequence with --keep-frames at the selected --resolution and --fps first.`, { cause: error });
     }
   }
 }

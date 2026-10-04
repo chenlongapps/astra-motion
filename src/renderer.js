@@ -1,4 +1,5 @@
-import { W, H, FRAMES, FONT_COMIC, FONT_HAND, FONT_SCRIPT, C, box, bubble, clamp, comic, ellipse, ease, fontFor, line, mix, paperTexture, path, progress, rand, shadow, star, text, withInkMotion, withTransform } from './sketch.js';
+import { W, H, FONT_COMIC, FONT_HAND, FONT_SCRIPT, C, box, bubble, clamp, comic, ellipse, ease, fontFor, line, mix, paperTexture, path, progress, rand, shadow, star, text, withInkMotion, withTransform } from './sketch.js';
+import { BASE_FPS, frameTiming, sampleTrack, sampleValue } from './frame-timing.js';
 import { character } from './character.js';
 import { editorBackground, flyingOffcut, scissors } from './editor.js';
 import { media } from './media.js';
@@ -12,7 +13,8 @@ const cutBodyAngles = [0, 0, 0, 0, 0, 0, -0.038, -0.033, -0.069, -0.1, -0.117, -
 
 export { cues } from './timeline.js';
 export class Renderer {
-  constructor(canvas, scale = 1) {
+  constructor(canvas, scale = 1, fps) {
+    this.timing = frameTiming(fps);
     this.canvas = canvas; this.scale = scale;
     canvas.width = W * scale; canvas.height = H * scale;
     const c = canvas.getContext('2d', { alpha: false });
@@ -20,7 +22,8 @@ export class Renderer {
     this.c = c; this.texture = paperTexture(scale);
   }
   renderFrame(frameIndex) {
-    const f = Math.floor(clamp(frameIndex, 0, FRAMES - 1)), c = this.c;
+    const outputFrame = Math.floor(clamp(frameIndex, 0, this.timing.frames - 1));
+    const f = outputFrame * BASE_FPS / this.timing.fps, c = this.c;
     c.setTransform(this.scale, 0, 0, this.scale, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over'; c.lineCap = 'round'; c.lineJoin = 'round';
     c.fillStyle = C.space; c.fillRect(0, 0, W, H);
     withInkMotion(c, f, 0.55, () => {
@@ -46,12 +49,12 @@ export class Renderer {
     });
     c.drawImage(this.texture, 0, 0, W, H);
     const v = c.createRadialGradient(960, 500, 250, 960, 520, 1120); v.addColorStop(0, '#111b3600'); v.addColorStop(1, '#080f242b'); c.fillStyle = v; c.fillRect(0, 0, W, H);
-    return f;
+    return outputFrame;
   }
 }
 
 function phone(c, f, x, y, s, final = 0) {
-  const t = f / 30;
+  const t = f / BASE_FPS;
   withTransform(c, x, y, s, 0, () => {
     c.save(); shadow(c, '#060d2566', 5, 7);
     box(c, -140, -250, 280, 498, C.ink, 34, 2); c.restore();
@@ -102,7 +105,7 @@ function phone(c, f, x, y, s, final = 0) {
     if (final && ((f >= 780 && f < 784) || (f >= 825 && f < 829))) {
       // The incoming dance scene becomes visible through a four-frame white flash.
       const start = f < 800 ? 780 : 825;
-      c.fillStyle = `rgba(255,254,250,${[0.88, 0.65, 0.4, 0.15][f - start]})`;
+      c.fillStyle = `rgba(255,254,250,${sampleValue([0.88, 0.65, 0.4, 0.15, 0], f - start)})`;
       c.fillRect(-126, -236, 252, 470);
     }
     const finalGlitch = final && f >= 795 && f < 802;
@@ -141,7 +144,7 @@ function phone(c, f, x, y, s, final = 0) {
     }
     if (final && f >= cues.nailed) {
       const scales = [0.55, 0.8, 1, 1.06, 1.04, 1.02, 1];
-      const scale = scales[Math.min(f - cues.nailed, scales.length - 1)];
+      const scale = sampleValue(scales, f - cues.nailed);
       withTransform(c, 0, 65, scale, -0.04, () => { comic(c, '完美', 0, -9, 51, C.yellow, 0, 'center', 11); comic(c, '搞定！', 0, 43, 53, '#fffefa', 0, 'center', 11); });
     }
     if (final > 0) {
@@ -172,7 +175,7 @@ function social(c, f) {
 }
 
 function actor(c, f) {
-  const t = f / 30;
+  const t = f / BASE_FPS;
   let x = mix(-8, 300, progress(f, 0, 34)), y = 654, angle = 0, expression = 'neutral';
   if (f < 34) y -= Math.abs(Math.sin(f * 0.39)) * 9;
   if (f >= 104) x = mix(300, 515, progress(f, 104, 136));
@@ -233,7 +236,7 @@ function actor(c, f) {
   }
   withInkMotion(c, f, 1.5 + flow * 1.2, () => { flowLines(c, f, p); character(c, p, f); }, 0.75 + flow * 0.25);
   if (f >= 55 && f < 73) bubble(c, '灵感起航！', p.x + 30, p.y - 111, 24);
-  if (f >= cues.snip && f < 168) { const sizes = [50, 75, 82, 81, 80]; const sz = sizes[Math.min(f - cues.snip, sizes.length - 1)]; comic(c, '咔嚓！', p.x + 122, p.y - 68, sz, C.yellow, -0.09); }
+  if (f >= cues.snip && f < 168) { const sz = sampleValue([50, 75, 82, 81, 80], f - cues.snip); comic(c, '咔嚓！', p.x + 122, p.y - 68, sz, C.yellow, -0.09); }
   if (f >= cues.throw && f < 192) comic(c, '走你！', mix(p.x + 225, p.x + 295, progress(f, 162, 185)), p.y - 86, mix(20, 47, progress(f, 162, 176)), '#fa8fac', 0.04);
   if (f >= 201 && f < 235) bubble(c, '清爽多了。', p.x + 2, p.y - 124, 26);
   if (f >= cues.spin && f < 305) { c.save(); c.globalAlpha *= 1 - progress(f, 299, 305); comic(c, '转起来！', p.x + 48, p.y - 67, 38, C.lilac, -0.08); c.restore(); }
@@ -242,7 +245,7 @@ function actor(c, f) {
   if (f >= cues.notice && f < 432) { bubble(c, '嗯？', p.x - 169, p.y - 84, 25); comic(c, '?', p.x + 57, p.y - 89, 44, C.yellow, 0.1, 'center', 3); }
   if (f >= cues.fixed && f < 467) {
     c.save(); c.globalAlpha *= 1 - progress(f, 455, 467);
-    const scale = f === 449 ? 0.55 : f === 450 ? 0.85 : 1;
+    const scale = sampleValue([0.55, 0.85, 1], f - cues.fixed);
     withTransform(c, 1133, 500, scale, 0, () => comic(c, '改好了！', 0, 0, 40, '#92d770', 0.1)); c.restore();
   }
   if (f >= cues.shakeLabel && f < cues.shakeLabelEnd) {
@@ -287,15 +290,15 @@ function finalActor(c, f, p, zoom) {
  * The vector pet uses uniform scaling; these measurements also register its reaches. */
 function applyMotion(p, f, world) {
   // The old shake gag is now a line-flow gag: hold the body, not the ink.
-  const motionFrame = world && f >= cues.maxShake && f < cues.calm ? cues.maxShake - 1 : f;
-  const r = referenceMotion[motionFrame]; if (!r) return;
+  const motionFrame = world && f >= cues.maxShake && f < cues.calm ? cues.maxShake - 1 : world ? Math.min(f, cues.finale - 1) : f;
+  const r = sampleTrack(referenceMotion, motionFrame, 4);
   const cam = world ? referenceCameraAt(motionFrame) : { s: 1, x: 0, y: 0 };
   const ox = p.x, oy = p.y;
   p.x = (r[0] - cam.x) / cam.s; p.y = (r[1] - cam.y) / cam.s;
   const s = (p.scale ?? 1) * cam.s;
   p.width = clamp(r[2] / s, 204, 230); p.height = clamp(r[3] / s, 97, 126);
   p.angle = r[4]; p.squash = 1;
-  if (f >= 151 && f <= 168) p.angle = cutBodyAngles[f - 151];
+  if (f >= 151 && f < 169) p.angle = sampleValue(cutBodyAngles, f - 151);
   if (p.leftTarget) p.leftTarget = [p.leftTarget[0] + ox - p.x, p.leftTarget[1] + oy - p.y];
   if (p.rightTarget) p.rightTarget = [p.rightTarget[0] + ox - p.x, p.rightTarget[1] + oy - p.y];
 }
@@ -337,7 +340,7 @@ function confetti(c, f) {
   const colors = [C.yellow, C.ice, C.lilac, C.starlight];
   const bursts = [{ frame: 747, x: 1490, y: 651, n: 32, seed: 57 }, { frame: 841, x: 918, y: 65, n: 28, seed: 21 }, { frame: 847, x: 337, y: 246, n: 24, seed: 55 }];
   for (const b of bursts) {
-    const dt = (f - b.frame) / 30; if (dt < 0) continue; const r = rand(b.seed);
+    const dt = (f - b.frame) / BASE_FPS; if (dt < 0) continue; const r = rand(b.seed);
     for (let i = 0; i < b.n; i++) {
       const vx = (r() - 0.5) * 510, vy = -(65 + r() * 230), spin = r() * 6, size = 2 + r() * 4;
       const x = b.x + vx * dt + Math.sin(dt * 2 + i) * dt * 9, y = b.y + vy * dt + 55 * dt * dt;

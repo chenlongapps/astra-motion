@@ -1,3 +1,5 @@
+import { BASE_FPS } from './frame-timing.js';
+
 const motion = new WeakMap();
 const paths = new Map();
 const TAU = Math.PI * 2;
@@ -52,7 +54,7 @@ export function strokeInk(c, contours) {
   }
   const start = contours[0]?.points ?? [0, 0];
   const draw = (frame, offset, opacity, weight) => {
-    const t = frame / 30;
+    const t = frame / BASE_FPS;
     c.beginPath();
     for (const { samples, closed, seed } of strokes) {
       for (let i = 0; i < samples.length; i++) {

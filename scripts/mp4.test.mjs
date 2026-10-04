@@ -5,8 +5,13 @@ import { muxMp4, readAacTrack } from '../src/mp4.js';
 
 const soundtrack = await readFile(new URL('../public/audio/generated.m4a', import.meta.url));
 const config = new Uint8Array([1, 66, 0, 40, 255, 225, 0, 4, 103, 66, 0, 40, 1, 0, 2, 104, 0]);
-const videoSamples = Array.from({ length: 900 }, (_, i) => ({ key: i % 60 === 0, data: new Uint8Array([0, 0, 0, 2, i % 60 ? 65 : 101, i % 256]) }));
-const options = () => ({ width: 1920, height: 1080, fps: 30, videoConfig: config, videoSamples, audioTrack: readAacTrack(soundtrack) });
+const samplesFor = fps => Array.from({ length: 30 * fps }, (_, i) => ({ key: i % (fps * 2) === 0, data: new Uint8Array([0, 0, 0, 2, i % (fps * 2) ? 65 : 101, i % 256]) }));
+const videoSamples = samplesFor(30);
+const options = (fps = 30) => {
+  const videoConfig = config.slice();
+  if (fps === 60) videoConfig[3] = videoConfig[11] = 42;
+  return { width: 1920, height: 1080, fps, videoConfig, videoSamples: samplesFor(fps), audioTrack: readAacTrack(soundtrack) };
+};
 
 // Inspect the written tables independently, following the field positions in
 // ISO BMFF. These tests do not use the production reader to validate its writer.
@@ -33,8 +38,8 @@ test('the bundled AAC retains its exact duration, priming samples and final part
   assert.equal(track.samples.reduce((sum, sample) => sum + sample.duration, 0) - track.mediaStart, 30 * 48000);
 });
 
-test('MP4 tables describe all 900 frames at exactly 30 fps and preserve every media payload', async () => {
-  const input = options(), blob = muxMp4(input), bytes = Buffer.from(await blob.arrayBuffer());
+for (const fps of [30, 60]) test(`MP4 tables describe all ${30 * fps} frames at exactly ${fps} fps and preserve every media payload`, async () => {
+  const input = options(fps), blob = muxMp4(input), bytes = Buffer.from(await blob.arrayBuffer());
   assert.equal(blob.type, 'video/mp4');
   const top = children(bytes); assert.deepEqual(top.map(item => item.type), ['ftyp', 'moov', 'mdat']);
   const movie = top[1], header = child(bytes, movie, 'mvhd');
@@ -45,12 +50,12 @@ test('MP4 tables describe all 900 frames at exactly 30 fps and preserve every me
   const tables = tracks.map(track => sampleTable(bytes, track));
   const times = child(bytes, tables[0], 'stts');
   assert.equal(bytes.readUInt32BE(times.data + 4), 1);
-  assert.equal(bytes.readUInt32BE(times.data + 8), 900);
-  assert.equal(bytes.readUInt32BE(times.data + 12), 3000);
+  assert.equal(bytes.readUInt32BE(times.data + 8), 30 * fps);
+  assert.equal(bytes.readUInt32BE(times.data + 12), 90000 / fps);
   const keyframes = child(bytes, tables[0], 'stss');
   assert.equal(bytes.readUInt32BE(keyframes.data + 4), 15);
   assert.equal(bytes.readUInt32BE(keyframes.data + 8), 1);
-  assert.equal(bytes.readUInt32BE(keyframes.end - 4), 841);
+  assert.equal(bytes.readUInt32BE(keyframes.end - 4), 28 * fps + 1);
   const edit = child(bytes, child(bytes, tracks[1], 'edts'), 'elst');
   assert.equal(bytes.readUInt32BE(edit.data + 8), 2700000);
   assert.equal(bytes.readUInt32BE(edit.data + 12), 1024);

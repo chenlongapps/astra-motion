@@ -4,16 +4,16 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pngPixels } from './frame-capture.mjs';
 import { openRenderer } from './browser.mjs';
-import { selectResolution } from './render-options.mjs';
-import { checkFrameCache } from './frame-cache.mjs';
+import { selectRenderOptions } from './render-options.mjs';
+import { checkFrameCache, frameCacheMetadata, writeFrameCacheMetadata } from './frame-cache.mjs';
 
 // Ensure cached PNGs encode the current editable source, including after a
 // partial refresh. Compare decoded RGBA pixels, not PNG compression bytes.
-const count = 900;
-const resolution = selectResolution(process.argv.slice(2)), { output, width, height } = resolution;
+const resolution = selectRenderOptions(process.argv.slice(2)), { output, width, height, fps, frames: count } = resolution;
 const filename = f => path.join(output, 'frames', `${String(f).padStart(4, '0')}.png`);
-await checkFrameCache(path.join(output, 'frames'), resolution, count);
-const report = { startedAt: new Date().toISOString(), passed: false, resolution: resolution.name, width, height, frameCount: count, comparedFrames: 0, algorithm: 'SHA-256 of decoded RGBA pixels', mismatches: [], browserErrors: [] };
+const cacheProfile = await frameCacheMetadata(resolution);
+await checkFrameCache(path.join(output, 'frames'), resolution, count, { allowStaleSource: true });
+const report = { startedAt: new Date().toISOString(), passed: false, resolution: resolution.name, width, height, fps, frameCount: count, comparedFrames: 0, algorithm: 'SHA-256 of decoded RGBA pixels', mismatches: [], browserErrors: [] };
 const sequence = createHash('sha256');
 const runtime = await openRenderer({ resolution });
 try {
@@ -31,7 +31,7 @@ try {
     if (rendered !== cached) report.mismatches.push({ frame: f, rendered, cached });
     sequence.update(`${f}:${cached}\n`);
     report.comparedFrames++;
-    if (f % 90 === 0 || f === 899) console.log(`Checked current-source pixels against ${f + 1} / 900 cached frames`);
+    if (f % (fps * 3) === 0 || f === count - 1) console.log(`Checked current-source pixels against ${f + 1} / ${count} cached frames`);
   }
   report.browserErrors = runtime.errors;
   report.sequenceHash = sequence.digest('hex');
@@ -39,4 +39,5 @@ try {
   report.completedAt = new Date().toISOString();
   await writeFile(path.join(output, 'frame-verification.json'), JSON.stringify(report, null, 2) + '\n');
   assert.equal(report.passed, true, `${report.mismatches.length} cached frame(s) differ from the current renderer`);
+  await writeFrameCacheMetadata(path.join(output, 'frames'), cacheProfile);
 } finally { await runtime.close(); }

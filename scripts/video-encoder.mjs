@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { option, selectResolution } from './render-options.mjs';
+import { DEFAULT_FPS } from '../src/frame-timing.js';
 
 const defaultResolution = selectResolution();
 
@@ -38,7 +39,7 @@ export function selectVideoEncoder(args = [], resolution = selectResolution(args
   return { name: 'h264_videotoolbox', hardware: true, bitrate, args: ['-c:v', 'h264_videotoolbox', '-b:v', bitrate, '-allow_sw', '0', '-profile:v', 'high'] };
 }
 
-export function checkVideoEncoder(encoder, { platform = process.platform, run = execFileSync, width = defaultResolution.width, height = defaultResolution.height } = {}) {
+export function checkVideoEncoder(encoder, { platform = process.platform, run = execFileSync, width = defaultResolution.width, height = defaultResolution.height, fps = DEFAULT_FPS } = {}) {
   if (!encoder.hardware) {
     run('ffmpeg', ['-version'], { stdio: 'ignore' });
     return;
@@ -47,7 +48,7 @@ export function checkVideoEncoder(encoder, { platform = process.platform, run = 
   try {
     // An encoder listing does not prove that hardware is available. Encode one
     // full-size frame without a file or software fallback before changing outputs.
-    run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'lavfi', '-i', `color=size=${width}x${height}:rate=30`, '-frames:v', '1', ...encoder.args, '-pix_fmt', 'yuv420p', '-f', 'null', '-'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'ignore', 'pipe'] });
+    run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'lavfi', '-i', `color=size=${width}x${height}:rate=${fps}`, '-frames:v', '1', ...encoder.args, '-pix_fmt', 'yuv420p', '-f', 'null', '-'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (error) {
     const detail = error.stderr?.toString().trim() || error.message;
     throw new Error(`VideoToolbox hardware encoding is unavailable. Use an FFmpeg build with h264_videotoolbox and working macOS hardware, or omit --gpu/--encoder=videotoolbox to use libx264.\n${detail}`, { cause: error });

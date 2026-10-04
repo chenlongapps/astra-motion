@@ -2,6 +2,7 @@ import { C, box, comic, ellipse, hatch, line, path, progress, text, star, mix, s
 import { media, transitionIcon } from './media.js';
 import { cues, captionChipAt, exportProgress, playheadAt, slidersAt } from './timeline.js';
 import { astraMark, constellation, orbit, planet, space, spark } from './astra.js';
+import { BASE_FPS } from './frame-timing.js';
 
 export function scissors(c, x, y, s, angle = 0, opening = 0.5) {
   withTransform(c, x, y, s, angle, () => {
@@ -29,7 +30,7 @@ export function editorBackground(c, f) {
   astraMark(c, 91, 65, 24, '#727cad');
   text(c, 'GPT-6 Astra', 133, 66, 34);
   box(c, 870, 43, 180, 44, C.well, 11, 2.6);
-  const seconds = String(Math.floor(f / 30)).padStart(2, '0'); const frames = String(f % 30).padStart(2, '0');
+  const seconds = String(Math.floor(f / BASE_FPS)).padStart(2, '0'); const frames = String(Math.floor(f) % BASE_FPS).padStart(2, '0');
   text(c, `00:00:${seconds}:${frames}`, 960, 66, 28, C.ink, 'center');
   box(c, 1520, 44, 98, 43, C.well, 9, 2.7); text(c, '1080p', 1569, 65, 25, C.ink, 'center');
   const done = f >= cues.exportDone;
@@ -140,8 +141,8 @@ function timeline(c, f) {
       const fw = mix(150, item.w, p), fh = mix(118, 100, p);
       c.save(); c.translate(fx + fw / 2, fy + fh / 2); c.rotate(-Math.sin(p * Math.PI) * .08);
       box(c, -fw / 2, -fh / 2, fw, fh, C.panel, 9, 2.5);
-      media(c, item.kind, -fw / 2 + 5, -fh / 2 + 5, fw - 10, fh - 10, item.start / 30, true); c.restore();
-    } else clip(c, item.kind, item.x, 752, item.w, item.start / 30, item.color, item.kind === 'coffee' && f < cues.cut);
+      media(c, item.kind, -fw / 2 + 5, -fh / 2 + 5, fw - 10, fh - 10, item.start / BASE_FPS, true); c.restore();
+    } else clip(c, item.kind, item.x, 752, item.w, item.start / BASE_FPS, item.color, item.kind === 'coffee' && f < cues.cut);
   }
   if (f > 128 && f < cues.cut) { box(c, 760, 712, 195, 26, C.panel, 7, 1.5); text(c, '无聊片段 zzz', 857, 725, 19, C.muted, 'center'); }
   if (f >= cues.cut && f < cues.throw) clip(c, 'boring', 710, 752, 300, 4.5, '#a6adc7');
@@ -166,5 +167,5 @@ function timeline(c, f) {
 export function flyingOffcut(c, f) {
   if (f < cues.throw || f >= 190) return;
   const p = (f - cues.throw) / 29;
-  withTransform(c, mix(900, 1850, p), 760 - Math.sin(p * Math.PI) * 310 - p * 550, 1 - p * 0.15, 0.24 + p * 3.8, () => clip(c, 'boring', -140, -50, 280, f / 30, '#a6adc7'));
+  withTransform(c, mix(900, 1850, p), 760 - Math.sin(p * Math.PI) * 310 - p * 550, 1 - p * 0.15, 0.24 + p * 3.8, () => clip(c, 'boring', -140, -50, 280, f / BASE_FPS, '#a6adc7'));
 }

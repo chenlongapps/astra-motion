@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { createStaticServer } from './serve.mjs';
 import { selectResolution } from './render-options.mjs';
+import { DEFAULT_FPS, frameTiming } from '../src/frame-timing.js';
 
 export { root, output } from './render-options.mjs';
 
@@ -194,7 +195,8 @@ export async function launchBrowser() {
   } catch (error) { await browser.close(); throw error; }
 }
 
-export async function openRenderer({ render = true, resolution = selectResolution(), width = resolution.width, height = resolution.height, handleSignals = true } = {}) {
+export async function openRenderer({ render = true, resolution = selectResolution(), fps = resolution.fps ?? DEFAULT_FPS, width = resolution.width, height = resolution.height, handleSignals = true } = {}) {
+  frameTiming(fps);
   const server = await createStaticServer();
   let browser, closing;
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
@@ -210,7 +212,7 @@ export async function openRenderer({ render = true, resolution = selectResolutio
     browser = await launchBrowser();
     if (handleSignals) for (const signal of signals) process.once(signal, interrupt);
     const page = await browser.newPage({ viewport: { width, height } });
-    await page.goto(`${server.url}${render ? `?render&resolution=${resolution.name}` : ''}`);
+    await page.goto(`${server.url}?fps=${fps}${render ? `&render&resolution=${resolution.name}` : ''}`);
     await page.evaluate(() => window.animationReady);
     return { page, browser, server, url: server.url, errors: page.errors, close };
   } catch (error) { await close(); throw error; }

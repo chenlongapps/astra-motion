@@ -1,6 +1,7 @@
 import { clamp, mix, progress } from './sketch.js';
 import referenceCamera from './reference-camera.json' with { type: 'json' };
 import timing from './timing.json' with { type: 'json' };
+import { sampleTrack, sampleValue } from './frame-timing.js';
 
 // Zero-based event frames shared with the offline soundtrack composer.
 export const cues = Object.freeze(timing.cues);
@@ -25,7 +26,7 @@ export function cameraAt(frame) {
 // Calibration is only used to undo the source camera when recovering world poses.
 // Using the stabilized camera here would bake the original shake into the actor.
 export function referenceCameraAt(frame) {
-  const measured = referenceCamera[frame];
+  const measured = sampleTrack(referenceCamera, frame);
   return measured ? { s: measured[0], x: measured[1], y: measured[2] } : cameraAt(frame);
 }
 export function clipAt(f) {
@@ -74,7 +75,7 @@ export const captionSize = s => (s.length <= 2 ? 40 : s.length <= 4 ? 32 : 28);
 export function slidersAt(f) {
   return {
     sparkle: progress(f, 499, 510) * 0.7,
-    flow: f >= 572 ? 0.05 : f === 571 ? 0.24 : progress(f, 517, cues.maxShake),
+    flow: f >= 570 ? sampleValue([1, 0.24, 0.05], f - 570) : progress(f, 517, cues.maxShake),
     zoom: progress(f, cues.zoom, 602) * 0.6,
   };
 }

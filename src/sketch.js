@@ -1,12 +1,11 @@
-import timing from './timing.json' with { type: 'json' };
+import { frameTiming } from './frame-timing.js';
 import { ellipseContour, pathContours, roundContour, strokeInk } from './ink.js';
 
 export { withInkMotion } from './ink.js';
 
 export const W = 1920;
 export const H = 1080;
-export const FPS = timing.fps;
-export const FRAMES = timing.frames;
+export const { fps: FPS, frames: FRAMES } = frameTiming();
 export const C = {
   ink: '#29324f', paper: '#e5e6f3', panel: '#f7f5fc', orange: '#e4aa7d',
   hatch: '#8783b2', yellow: '#f2ce78', pink: '#ead6ed', coral: '#da759f',

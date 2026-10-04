@@ -79,7 +79,7 @@ test('4K uses a larger hardware bitrate and preflights the actual export dimensi
   assert.deepEqual(selectVideoEncoder(['--resolution=4k']).args, selectVideoEncoder().args);
   checkVideoEncoder(encoder, { ...resolution, platform: 'darwin', run: (...args) => calls.push(args) });
   assert.equal(calls.length, 1);
-  assert.ok(calls[0][1].includes('color=size=3840x2160:rate=30'));
+  assert.ok(calls[0][1].includes('color=size=3840x2160:rate=60'));
   assert.ok(calls[0][1].includes('48M'));
 });
 
@@ -119,12 +119,14 @@ test('hardware preflight tests a full-size frame without a file or software fall
   assert.equal(calls.length, 1);
   const [command, args, options] = calls[0];
   assert.equal(command, 'ffmpeg');
-  assert.ok(args.includes('color=size=1920x1080:rate=30'));
+  assert.ok(args.includes('color=size=1920x1080:rate=60'));
   assert.equal(args[args.indexOf('-frames:v') + 1], '1');
   assert.equal(args[args.indexOf('-allow_sw') + 1], '0');
   assert.equal(args[args.indexOf('-b:v') + 1], '8M');
   assert.deepEqual(args.slice(-3), ['-f', 'null', '-']);
   assert.equal(options.timeout, 15000);
+  checkVideoEncoder(encoder, { fps: 30, platform: 'darwin', run: (...args) => calls.push(args) });
+  assert.ok(calls[1][1].includes('color=size=1920x1080:rate=30'));
 });
 
 test('failed hardware preflight includes FFmpeg diagnostics and a CPU alternative', () => {

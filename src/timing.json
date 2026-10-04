@@ -1,6 +1,8 @@
 {
   "fps": 30,
   "frames": 900,
+  "defaultFps": 60,
+  "supportedFps": [30, 60],
   "cues": {
     "audio": 36, "sun": 47, "coffee": 62, "cat": 77, "dance": 92,
     "sunLand": 60, "coffeeLand": 75, "catLand": 90, "danceLand": 105,

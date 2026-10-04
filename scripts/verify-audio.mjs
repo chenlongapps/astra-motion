@@ -6,14 +6,14 @@ import path from 'node:path';
 import { generateAudio, prepareSoundtrack, measureAudio, pcmHash, root, soundtrack, timing } from './generate-audio.mjs';
 import { compose } from './audio/score.mjs';
 import { SAMPLE_RATE, readPcmWav, renderBus, renderSoundtrack, floatWav } from './audio/synth.mjs';
-import { selectResolution } from './render-options.mjs';
+import { selectRenderOptions } from './render-options.mjs';
 import { verifyExportAudio } from './export-audio.mjs';
 
 // Check real rendered PCM and decoded AAC, rather than only event timestamps.
 const videoOnly = process.argv.includes('--video');
-const resolution = selectResolution(process.argv.slice(2));
+const resolution = selectRenderOptions(process.argv.slice(2));
 const output = videoOnly ? resolution.output : path.join(root, 'output');
-const report = { startedAt: new Date().toISOString(), passed: false, ...(videoOnly ? { resolution: resolution.name } : {}), checks: [], failures: [] };
+const report = { startedAt: new Date().toISOString(), passed: false, fps: resolution.fps, ...(videoOnly ? { resolution: resolution.name } : {}), checks: [], failures: [] };
 async function check(name, fn) {
   try { const details = await fn(); report.checks.push({ name, passed: true, details }); console.log(`PASS ${name}`); }
   catch (error) { report.failures.push({ name, error: error.stack }); report.checks.push({ name, passed: false, error: error.message }); console.error(`FAIL ${name}: ${error.message}`); }
@@ -25,7 +25,7 @@ function mono(channels) {
 
 function alignment(reference, actual, frame) {
   const start = Math.round(frame / timing.fps * SAMPLE_RATE), length = Math.round(SAMPLE_RATE * 0.12);
-  const limit = Math.round(SAMPLE_RATE / timing.fps);
+  const limit = Math.round(SAMPLE_RATE / resolution.fps);
   let best = { correlation: -1, delaySamples: 0 };
   for (let lag = -limit; lag <= limit; lag++) {
     let dot = 0, aa = 0, bb = 0;
@@ -94,13 +94,14 @@ try {
       return { pcmSha256: first.pcmSha256, independentGenerations: 2, matchesBundledAsset: true, generatedWebAudioValid: true };
     });
     const score = compose(timing);
-    await check('All action effects become audible within one frame of their visual cue', async () => {
+    await check('All action effects become audible within one authored frame of their visual cue', async () => {
       return score.groups.map(group => {
         const events = score.effects.filter(e => e.cue === group.cue).map(e => ({ ...e, time: e.time - group.time }));
         assert.ok(events.every(e => e.time >= 0), `Effect precedes ${group.cue}`);
         const end = Math.max(...events.map(e => e.time + e.duration));
         const channels = renderBus(events, Math.ceil(end * SAMPLE_RATE));
         const firstAudible = channels[0].findIndex((sample, i) => Math.max(Math.abs(sample), Math.abs(channels[1][i])) >= 0.001);
+        // Acoustic attack envelopes are authored in time, independent of output sampling.
         assert.ok(firstAudible >= 0 && firstAudible < SAMPLE_RATE / timing.fps, `${group.cue} onset: ${firstAudible} samples`);
         return { cue: group.cue, frame: group.frame, onsetDelaySamples: firstAudible, onsetDelayMs: firstAudible / SAMPLE_RATE * 1000 };
       });

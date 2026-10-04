@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { openRenderer } from './browser.mjs';
-import { selectResolution, root } from './render-options.mjs';
+import { selectRenderOptions, root } from './render-options.mjs';
 
-const resolution = selectResolution(process.argv.slice(2)), { output, width, height } = resolution;
+const resolution = selectRenderOptions(process.argv.slice(2)), { output, width, height, fps, frames } = resolution;
 const videoFile = path.join(output, 'astra-motion.mp4');
-const report = { startedAt: new Date().toISOString(), passed: false, resolution: resolution.name, width, height, checks: [], failures: [], mediaErrors: [], browserErrors: [] };
+const report = { startedAt: new Date().toISOString(), passed: false, resolution: resolution.name, width, height, fps, frames, checks: [], failures: [], mediaErrors: [], browserErrors: [] };
 await mkdir(path.join(output, 'screenshots'), { recursive: true });
 let runtime;
 async function check(name, fn) {
@@ -42,9 +42,9 @@ try {
     return metadata;
   });
 
-  await check('Actual MP4 seeks resolve and decode at 0, 15, and 29.966 seconds', async () => {
+  await check('Actual MP4 seeks resolve and decode at the start, midpoint, and final frame', async () => {
     const samples = [];
-    for (const target of [0, 15, 29.966]) {
+    for (const target of [0, 15, (frames - 1) / fps]) {
       const state = await page.evaluate(async t => {
         const v = document.querySelector('video'); v.pause();
         if (Math.abs(v.currentTime - t) > 0.00001) {

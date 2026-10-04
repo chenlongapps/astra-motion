@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { frameTiming, parseFps } from '../src/frame-timing.js';
 
 const profiles = JSON.parse(readFileSync(new URL('../src/render-profiles.json', import.meta.url), 'utf8'));
 export const root = fileURLToPath(new URL('../', import.meta.url));
@@ -19,4 +20,14 @@ export function selectResolution(args = []) {
   const name = option(args, '--resolution') ?? '1080p';
   if (!Object.hasOwn(profiles, name)) throw new Error('Use --resolution=1080p or --resolution=4k (3840×2160).');
   return { name, ...profiles[name], output: name === '1080p' ? output : path.join(output, name) };
+}
+
+export function selectFrameRate(args = []) {
+  try { return parseFps(option(args, '--fps')); }
+  catch (error) { throw new Error(`Use --fps=30 or --fps=60. ${error.message}`, { cause: error }); }
+}
+
+export function selectRenderOptions(args = []) {
+  const resolution = selectResolution(args), timing = frameTiming(selectFrameRate(args));
+  return { ...resolution, ...timing, output: path.join(resolution.output, `${timing.fps}fps`) };
 }

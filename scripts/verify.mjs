@@ -4,13 +4,17 @@ import { mkdir, mkdtemp, readFile, stat, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openRenderer, output } from './browser.mjs';
-import { selectResolution } from './render-options.mjs';
+import { selectFrameRate, selectResolution } from './render-options.mjs';
 import { createFrameCapture, pngPixels } from './frame-capture.mjs';
+import { BASE_FPS, frameTiming } from '../src/frame-timing.js';
 
 // This is a browser smoke/integration check, using the same Chromium launcher
 // as the video exporter. No golden images are needed for artistic revisions.
-const report = { startedAt: new Date().toISOString(), passed: false, checks: [], failures: [], browserErrors: [], resourceFailures: [], mediaRequestCancellations: [], consoleErrors: [], screenshots: {} };
-const artifactDir = path.join(output, 'screenshots');
+const { fps, frames: frameCount } = frameTiming(selectFrameRate(process.argv.slice(2))), lastFrame = frameCount - 1;
+const sceneFrame = f => f === 899 ? lastFrame : f * fps / BASE_FPS;
+const clockTolerance = Math.ceil(fps / 15);
+const report = { startedAt: new Date().toISOString(), passed: false, fps, frameCount, checks: [], failures: [], browserErrors: [], resourceFailures: [], mediaRequestCancellations: [], consoleErrors: [], screenshots: {} };
+const artifactDir = path.join(output, 'screenshots', `${fps}fps`);
 await mkdir(artifactDir, { recursive: true });
 let runtime;
 
@@ -146,13 +150,13 @@ async function layout(page, viewport, filename) {
 }
 
 try {
-  runtime = await openRenderer({ render: false, width: 1440, height: 1000 });
+  runtime = await openRenderer({ render: false, fps, width: 1440, height: 1000 });
   const { page } = runtime;
   page.setDefaultTimeout(15000);
   observe(page);
   // Attach asset observers before a fresh navigation so initial font/audio
   // responses, as well as runtime failures, are included in the report.
-  await page.goto(runtime.url);
+  await page.goto(`${runtime.url}?fps=${fps}`);
   await waitForReady(page);
 
   await check('Web export enables supported resolutions without loading its AAC resource', async () => {
@@ -160,6 +164,127 @@ try {
     const state = await page.evaluate(() => ({ resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, exportDisabled: document.querySelector('#export').disabled, startDisabled: document.querySelector('#export-start').disabled, downloadDisabled: document.querySelector('#download').disabled, dialogClosed: !document.querySelector('#export-dialog').open, busy: document.querySelector('#export-dialog').getAttribute('aria-busy'), audioLoaded: performance.getEntriesByType('resource').some(entry => entry.name.endsWith('generated.m4a')) }));
     assert.deepEqual(state, { resolution: '1080p', exportDisabled: false, startDisabled: false, downloadDisabled: true, dialogClosed: true, busy: 'false', audioLoaded: false });
     return state;
+  });
+
+  await check('Player frame bounds, cue times and keyboard stepping follow the selected frame rate', async () => {
+    const results = [], probe = await runtime.browser.newPage();
+    try {
+      for (const rate of [30, 60]) {
+        await probe.goto(`${runtime.url}?fps=${rate}`); await probe.evaluate(() => window.animationReady);
+        const metadata = await probe.evaluate(() => ({ fps: window.animation.fps, frames: window.animation.frames, duration: window.animation.duration, cut: window.animation.cues.cut, max: Number(document.querySelector('#seek').max) }));
+        assert.deepEqual(metadata, { fps: rate, frames: rate * 30, duration: 30, cut: rate * 5, max: rate * 30 - 1 });
+        await probe.evaluate(() => { window.animation.seek(window.animation.fps * 15); document.activeElement.blur(); });
+        await pressKey(probe, 'ArrowRight');
+        assert.equal((await getState(probe)).frame, rate * 15 + 1);
+        await pressKey(probe, 'ArrowLeft', 8);
+        const stepped = await getState(probe);
+        assert.equal(stepped.frame, rate * 14 + 1);
+        assert.ok(Math.abs(stepped.audioTime - (14 + 1 / rate)) < 0.001);
+        await seekWithControl(probe, rate * 30 - 1);
+        assert.equal((await getState(probe)).label, '重播');
+        results.push(metadata);
+      }
+      await probe.goto(runtime.url); await probe.evaluate(() => window.animationReady);
+      assert.equal(await probe.evaluate(() => window.animation.fps), 60);
+      for (const query of ['?fps=24', '?fps=', '?fps=30&fps=60']) {
+        await probe.goto(`${runtime.url}${query}`);
+        const error = await probe.evaluate(() => window.animationReady.then(() => null, error => error.message));
+        assert.match(error, /帧率/);
+        assert.equal(await probe.evaluate(() => document.querySelector('#play').disabled && !window.animation.ready), true);
+      }
+      return results;
+    } finally { await probe.close(); }
+  });
+
+  await check('60 fps samples match 30 fps at shared times and render deterministic moving half-frames', async () => {
+    const result = await page.evaluate(async () => {
+      const { Renderer } = await import('/src/renderer.js');
+      const low = new Renderer(document.createElement('canvas'), 1, 30), high = new Renderer(document.createElement('canvas'), 1, 60);
+      const hash = async (renderer, frame) => {
+        renderer.renderFrame(frame);
+        const data = renderer.c.getImageData(0, 0, renderer.canvas.width, renderer.canvas.height).data;
+        return [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))].join(',');
+      };
+      const frames = [0, 17, 60, 131, 132, 150, 151, 167, 168, 285, 303, 415, 442, 449, 520, 521, 569, 570, 571, 591, 604, 690, 737, 738, 751, 755, 767, 770, 780, 783, 795, 801, 812, 815, 825, 826, 842, 843, 898, 899];
+      const samples = [], drawTimes = [];
+      try {
+        for (const frame of frames) {
+          const original = await hash(low, frame), even = await hash(high, frame * 2), odd = await hash(high, frame * 2 + 1);
+          high.renderFrame(0);
+          const repeated = await hash(high, frame * 2 + 1);
+          const start = performance.now(); high.renderFrame(frame * 2 + 1); drawTimes.push(performance.now() - start);
+          samples.push({ frame, sharedPixels: original === even, middleMoves: odd !== even, deterministic: odd === repeated });
+        }
+        return { samples, meanDrawMs: drawTimes.reduce((a, b) => a + b, 0) / drawTimes.length, maximumDrawMs: Math.max(...drawTimes) };
+      } finally {
+        for (const renderer of [low, high]) { renderer.canvas.width = renderer.canvas.height = 1; renderer.texture.width = renderer.texture.height = 1; }
+      }
+    });
+    for (const sample of result.samples) {
+      assert.ok(sample.sharedPixels, `30/60 fps differ at source frame ${sample.frame}`);
+      assert.ok(sample.middleMoves, `60 fps repeated source frame ${sample.frame}`);
+      assert.ok(sample.deterministic, `Half-frame ${sample.frame + 0.5} depends on drawing history`);
+    }
+    for (const sourceFrame of [150.5, 442.5, 780.5, 826.5, 899.5]) {
+      const frame = Math.min(lastFrame, Math.floor(sourceFrame * fps / BASE_FPS));
+      await seekWithControl(page, frame);
+      await page.screenshot({ path: path.join(artifactDir, `interpolated-${frame}.png`) });
+    }
+    return result;
+  });
+
+  await check('Export capability and keyboard selection distinguish 4K30 from unsupported 4K60', async () => {
+    const limited = await runtime.browser.newPage();
+    try {
+      await limited.send('Page.addScriptToEvaluateOnNewDocument', { source: 'const nativeSupport = VideoEncoder.isConfigSupported.bind(VideoEncoder); VideoEncoder.isConfigSupported = async config => config.width === 3840 && config.framerate === 60 ? { supported: false, config } : nativeSupport(config);' });
+      await limited.goto(runtime.url); await limited.evaluate(() => window.exportReady);
+      await openExportDialog(limited);
+      await limited.evaluate(() => document.querySelector('#resolution-4k').click());
+      const state = await limited.evaluate(() => ({ resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, fps: document.querySelector('#export-fps button[aria-pressed="true"]').value, unavailable: document.querySelector('#fps-60').disabled, startEnabled: !document.querySelector('#export-start').disabled, filename: document.querySelector('#export-filename').textContent }));
+      assert.deepEqual(state, { resolution: '4k', fps: '30', unavailable: true, startEnabled: true, filename: 'astra-motion-4k-30fps.mp4' });
+      await limited.evaluate(() => { document.querySelector('#fps-60').dispatchEvent(new Event('click')); document.querySelector('#fps-30').focus(); });
+      await pressKey(limited, 'ArrowRight');
+      assert.equal(await limited.evaluate(() => document.querySelector('#export-frame-rate').textContent), '30 fps');
+      await limited.evaluate(() => document.querySelector('#resolution-1080p').click());
+      await pressKey(limited, 'End');
+      assert.equal(await limited.evaluate(() => document.querySelector('#export-frame-rate').textContent), '60 fps');
+      return state;
+    } finally { await limited.close(); }
+  });
+
+  await check('Browser exports submit contiguous microsecond timestamps at both frame rates and cancel cleanly', async () => {
+    const probe = await runtime.browser.newPage(), results = [];
+    try {
+      await probe.goto(runtime.url); await probe.evaluate(() => window.exportReady);
+      for (const rate of [30, 60]) {
+        await probe.evaluate(async fps => {
+          const { exportVideo } = await import('/src/browser-export.js');
+          const NativeEncoder = VideoEncoder;
+          window.timingSamples = [];
+          window.VideoEncoder = class extends EventTarget {
+            static async isConfigSupported(config) { return { supported: true, config }; }
+            constructor() { super(); this.state = 'unconfigured'; this.encodeQueueSize = 0; }
+            configure(config) { this.state = 'configured'; window.timingConfig = config; }
+            encode(frame, options) { window.timingSamples.push({ timestamp: frame.timestamp, duration: frame.duration, key: options.keyFrame }); this.encodeQueueSize++; }
+            close() { this.state = 'closed'; }
+          };
+          window.timingAbort = new AbortController();
+          window.timingExport = exportVideo({ fps, signal: window.timingAbort.signal, onProgress: progress => { window.timingProgress = progress; } }).then(() => 'unexpected success', error => error.name).finally(() => { window.VideoEncoder = NativeEncoder; });
+        }, rate);
+        await probe.waitForFunction(() => window.timingSamples.length === 3);
+        const state = await probe.evaluate(() => ({ samples: window.timingSamples, fps: window.timingConfig.framerate, total: window.timingProgress.total }));
+        assert.equal(state.fps, rate); assert.equal(state.total, rate * 30);
+        for (const [i, sample] of state.samples.entries()) {
+          assert.equal(sample.timestamp, Math.round(i * 1e6 / rate));
+          assert.equal(sample.duration, Math.round((i + 1) * 1e6 / rate) - sample.timestamp);
+          assert.equal(sample.key, i === 0);
+        }
+        assert.equal(await probe.evaluate(() => { window.timingAbort.abort(); return window.timingExport; }), 'AbortError');
+        results.push(state);
+      }
+      assert.deepEqual(probe.errors, []);
+      return results;
+    } finally { await probe.close(); }
   });
 
   await check('Export dialog pauses at the current frame, traps keyboard focus, and returns it on close', async () => {
@@ -175,7 +300,7 @@ try {
       return { frame: window.animation.frame, playing: window.animation.playing, paused: document.querySelector('#soundtrack').paused, modal: document.querySelector('#export-dialog').matches(':modal'), focused: document.activeElement.id, snapshotMatches: actual.every((value, i) => value === expected[i]), filename: document.querySelector('#export-filename').textContent };
     });
     assert.ok(opened.modal && opened.paused && opened.snapshotMatches, JSON.stringify(opened)); assert.equal(opened.playing, false);
-    assert.equal(opened.focused, 'resolution-1080p'); assert.equal(opened.filename, 'astra-motion-1080p.mp4');
+    assert.equal(opened.focused, 'resolution-1080p'); assert.equal(opened.filename, 'astra-motion-1080p-60fps.mp4');
     await page.evaluate(() => document.querySelector('#export-start').focus());
     await pressKey(page, 'Tab');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'export-close');
@@ -281,7 +406,7 @@ try {
         await window.animation.play(); window.animation.seek(789);
         document.querySelector('#export-close').click();
         document.querySelector('#resolution-4k').dispatchEvent(new Event('click'));
-        return { frame: window.animation.frame, playing: window.animation.playing, disabled: ['play', 'replay', 'seek', 'resolution-1080p', 'resolution-4k', 'export', 'export-start', 'export-close', 'download'].every(id => document.getElementById(id).disabled), resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, instances: window.encoderInstances, focused: document.activeElement.id };
+        return { frame: window.animation.frame, playing: window.animation.playing, disabled: ['play', 'replay', 'seek', 'resolution-1080p', 'resolution-4k', 'fps-30', 'fps-60', 'export', 'export-start', 'export-close', 'download'].every(id => document.getElementById(id).disabled), resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, instances: window.encoderInstances, focused: document.activeElement.id };
       });
       assert.equal(busy.frame, 456); assert.equal(busy.playing, false); assert.equal(busy.instances, 1); assert.ok(busy.disabled);
       assert.equal(busy.resolution, '1080p');
@@ -306,18 +431,20 @@ try {
     // Replace only the exporter in this page with a gated, non-video fixture.
     // This checks UI and actual repeated downloads without encoding a movie.
     const fixtureSource = `
-      export async function getExportSupport() { return { '1080p': { supported: true, reason: '' }, '4k': { supported: true, reason: '' } }; }
-      export async function exportVideo({ resolution, signal, onProgress }) {
+      export async function getExportSupport() { return Object.fromEntries(['1080p', '4k'].map(resolution => [resolution, { 30: { supported: true, reason: '' }, 60: { supported: true, reason: '' } }])); }
+      export async function exportVideo({ resolution, fps, signal, onProgress }) {
         window.fixtureCalls = (window.fixtureCalls ?? 0) + 1;
         (window.fixtureResolutions ??= []).push(resolution);
-        onProgress({ stage: 'preparing', completed: 0, total: 900 });
-        onProgress({ stage: 'rendering', completed: 333, total: 900 });
+        (window.fixtureRates ??= []).push(fps);
+        const total = fps * 30;
+        onProgress({ stage: 'preparing', completed: 0, total });
+        onProgress({ stage: 'rendering', completed: total * 0.37, total });
         const gate = name => new Promise((resolve, reject) => {
           window[name] = resolve;
           signal.addEventListener('abort', () => reject(new DOMException('已取消导出。', 'AbortError')), { once: true });
         });
         await gate('finishFixtureFrames');
-        onProgress({ stage: 'finalizing', completed: 900, total: 900 });
+        onProgress({ stage: 'finalizing', completed: total, total });
         await gate('finishFixtureMux');
         return new Blob([new Uint8Array(2 * 1024 ** 2).fill(42)], { type: 'video/mp4' });
       }
@@ -337,7 +464,7 @@ try {
       });
       await openExportDialog(completed);
       await pressKey(completed, 'ArrowRight');
-      assert.deepEqual(await completed.evaluate(() => ({ selected: document.querySelector('#resolution button[aria-pressed="true"]').value, pressed: document.querySelectorAll('#resolution button[aria-pressed="true"]').length, focused: document.activeElement.id, filename: document.querySelector('#export-filename').textContent })), { selected: '4k', pressed: 1, focused: 'resolution-4k', filename: 'astra-motion-4k.mp4' });
+      assert.deepEqual(await completed.evaluate(() => ({ selected: document.querySelector('#resolution button[aria-pressed="true"]').value, pressed: document.querySelectorAll('#resolution button[aria-pressed="true"]').length, focused: document.activeElement.id, filename: document.querySelector('#export-filename').textContent })), { selected: '4k', pressed: 1, focused: 'resolution-4k', filename: 'astra-motion-4k-60fps.mp4' });
       const qualityLayout = await dialogLayout(completed, { width: 1440, height: 1000 }, 'export-quality-4k.png');
       await pressKey(completed, 'Enter');
       assert.equal(await completed.evaluate(() => document.querySelectorAll('#resolution button[aria-pressed="true"]').length), 1);
@@ -348,9 +475,9 @@ try {
       for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-settings-${viewport.name}.png`));
       layouts.push(await dialogLayout(completed, { width: 300, height: 480 }, 'export-settings-short.png'));
       await completed.evaluate(() => document.querySelector('#export-start').click());
-      await completed.waitForFunction(() => document.querySelector('#export-progress').value === 333);
+      await completed.waitForFunction(() => document.querySelector('#export-progress').value === 666);
       const progress = await completed.evaluate(() => ({ state: document.querySelector('#export-dialog').dataset.state, percent: document.querySelector('#export-percent').value, progress: document.querySelector('#export-progress').value, settingsDisabled: [...document.querySelectorAll('#resolution button')].every(button => button.disabled), closeDisabled: document.querySelector('#export-close').disabled, cancelVisible: !document.querySelector('#export-cancel').hidden, status: document.querySelector('#export-status').textContent }));
-      assert.equal(progress.state, 'exporting'); assert.equal(progress.percent, '37%'); assert.equal(progress.progress, 333);
+      assert.equal(progress.state, 'exporting'); assert.equal(progress.percent, '37%'); assert.equal(progress.progress, 666);
       assert.ok(progress.settingsDisabled && progress.closeDisabled && progress.cancelVisible); assert.match(progress.status, /正在导出/);
       for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-progress-${viewport.name}.png`));
       await completed.evaluate(() => window.finishFixtureFrames());
@@ -360,7 +487,7 @@ try {
       await completed.evaluate(() => window.finishFixtureMux());
       await completed.waitForFunction(() => document.querySelector('#export-dialog').dataset.state === 'complete');
       const ready = await completed.evaluate(() => ({ frame: window.animation.frame, playing: window.animation.playing, filename: document.querySelector('#download').dataset.filename, fileSize: document.querySelector('#export-size').textContent, downloadEnabled: !document.querySelector('#download').disabled && !document.querySelector('#download').hidden, againVisible: !document.querySelector('#export-again').hidden, closeEnabled: !document.querySelector('#export-close').disabled, focused: document.activeElement.id }));
-      assert.equal(ready.frame, 420); assert.equal(ready.playing, false); assert.equal(ready.filename, 'astra-motion-1080p.mp4');
+      assert.equal(ready.frame, 420); assert.equal(ready.playing, false); assert.equal(ready.filename, 'astra-motion-1080p-60fps.mp4');
       assert.equal(ready.fileSize, '2.0 MB'); assert.ok(ready.downloadEnabled && ready.againVisible && ready.closeEnabled); assert.equal(ready.focused, 'download');
       for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-complete-${viewport.name}.png`));
       let firstDownload;
@@ -390,17 +517,21 @@ try {
       await completed.evaluate(() => {
         document.querySelector('#export-again').click();
         const resolution = document.querySelector('#resolution-4k'); resolution.focus(); resolution.click();
+        document.querySelector('#fps-30').click();
       });
       const settings = await completed.evaluate(() => ({ state: document.querySelector('#export-dialog').dataset.state, filename: document.querySelector('#export-filename').textContent, dimensions: document.querySelector('#export-dimensions').textContent, enabled: !document.querySelector('#resolution button[aria-pressed="true"]').disabled, focused: document.activeElement.id }));
-      assert.equal(settings.state, 'settings'); assert.equal(settings.filename, 'astra-motion-4k.mp4'); assert.match(settings.dimensions, /3840 × 2160/); assert.ok(settings.enabled); assert.equal(settings.focused, 'resolution-4k');
+      assert.equal(settings.state, 'settings'); assert.equal(settings.filename, 'astra-motion-4k-30fps.mp4'); assert.match(settings.dimensions, /3840 × 2160/); assert.ok(settings.enabled); assert.equal(settings.focused, 'resolution-4k');
       await completed.evaluate(() => document.querySelector('#export-close').click());
       await completed.waitForFunction(() => !document.querySelector('#export-dialog').open);
       await openExportDialog(completed);
       assert.equal(await completed.evaluate(() => document.querySelector('#export-dialog').dataset.state), 'complete', 'Closing new settings should retain the last downloadable result');
       assert.equal(await completed.evaluate(() => document.querySelector('#export-filename').textContent), ready.filename);
-      await completed.evaluate(() => { document.querySelector('#export-again').click(); document.querySelector('#resolution-4k').click(); document.querySelector('#export-start').click(); });
+      assert.equal(await completed.evaluate(() => document.querySelector('#export-frame-rate').textContent), '60 fps');
+      await completed.evaluate(() => { document.querySelector('#export-again').click(); document.querySelector('#resolution-4k').click(); document.querySelector('#fps-30').click(); document.querySelector('#export-start').click(); });
       await completed.waitForFunction(() => window.fixtureCalls === 2);
       assert.deepEqual(await completed.evaluate(() => window.fixtureResolutions), ['1080p', '4k']);
+      assert.deepEqual(await completed.evaluate(() => window.fixtureRates), [60, 30]);
+      assert.equal(await completed.evaluate(() => document.querySelector('#export-progress').max), 900);
       assert.deepEqual(await completed.evaluate(() => ({ urls: window.exportUrls.length, revoked: window.revokedExportUrls })), { urls: 1, revoked: [await completed.evaluate(() => window.exportUrls[0])] });
       await completed.evaluate(() => document.querySelector('#export-cancel').click());
       await completed.waitForFunction(() => !window.animation.exporting);
@@ -474,7 +605,7 @@ try {
         await vectorPage.send('Network.setBlockedURLs', { urls: ['*/sprites/*'] });
         await vectorPage.goto(`${runtime.url}${query}`);
         await vectorPage.evaluate(() => window.animationReady);
-        const first = await frameHash(vectorPage, 0), last = await frameHash(vectorPage, 899);
+        const first = await frameHash(vectorPage, 0), last = await frameHash(vectorPage, await vectorPage.evaluate(() => window.animation.frames - 1));
         assert.equal(spriteRequests, 0, 'The vector character still downloads a sprite');
         assert.notEqual(first.hash, last.hash);
         assert.equal(await vectorPage.evaluate(() => window.animation.ready && document.querySelector('#error').hidden), true);
@@ -561,7 +692,7 @@ try {
   });
 
   await check('Direct frame rendering clamps bounds and floors fractions', async () => {
-    const cases = [[-20, 0], [0, 0], [17.9, 17], [899, 899], [1200, 899]];
+    const cases = [[-20, 0], [0, 0], [17.9, 17], [lastFrame, lastFrame], [frameCount + 300, lastFrame]];
     const results = await page.evaluate(tests => tests.map(([input, expected]) => ({ input, expected, returned: window.renderFrame(input), frame: window.animation.frame })), cases);
     for (const result of results) { assert.equal(result.returned, result.expected); assert.equal(result.frame, result.expected); }
     return results;
@@ -693,7 +824,7 @@ try {
 
   const baseline = new Map();
   await check('Pixel determinism after seeded random seeks across all scenes', async () => {
-    const frames = [0, 45, 100, 119, 150, 212, 280, 325, 380, 428, 480, 525, 575, 620, 690, 733, 748, 810, 855, 899];
+    const frames = [0, 45, 100, 119, 150, 212, 280, 325, 380, 428, 480, 525, 575, 620, 690, 733, 748, 810, 855, 899].map(sceneFrame);
     for (const frame of frames) baseline.set(frame, (await frameHash(page, frame)).hash);
     assert.ok(new Set(baseline.values()).size >= 18, 'Distinct moments should produce distinct drawings');
     let seed = 0x0f055;
@@ -701,7 +832,7 @@ try {
     const shuffled = [...frames];
     for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
     for (const frame of shuffled) {
-      await page.evaluate(f => window.animation.seek(f), Math.floor(random() * 900));
+      await page.evaluate(f => window.animation.seek(f), Math.floor(random() * frameCount));
       const actual = await frameHash(page, frame);
       assert.equal(actual.frame, frame);
       assert.equal(actual.hash, baseline.get(frame), `Frame ${frame} changed after another frame was drawn`);
@@ -722,10 +853,10 @@ try {
     for (const sample of samples) {
       assert.equal(sample.playing, true);
       assert.equal(sample.audioPaused, false);
-      assert.ok(Math.abs(sample.frame - Math.floor(sample.audioTime * 30)) <= 2, `Audio/frame discrepancy at ${sample.audioTime}s`);
+      assert.ok(Math.abs(sample.frame - Math.floor(sample.audioTime * fps)) <= clockTolerance, `Audio/frame discrepancy at ${sample.audioTime}s`);
     }
     assert.ok(samples.at(-1).frame > samples[0].frame);
-    return { samples, maximumFrameClockDifference: Math.max(...samples.map(s => Math.abs(s.frame - Math.floor(s.audioTime * 30)))) };
+    return { samples, maximumFrameClockDifference: Math.max(...samples.map(s => Math.abs(s.frame - Math.floor(s.audioTime * fps)))) };
   });
 
   await check('Pause freezes pixels, frame, and audio; resume advances', async () => {
@@ -744,12 +875,12 @@ try {
   });
 
   await check('Progress control seeks while playing and preserves audio synchronization', async () => {
-    await seekWithControl(page, 450);
-    await page.waitForFunction(() => window.animation.playing && window.animation.frame >= 453);
+    await seekWithControl(page, 15 * fps);
+    await page.waitForFunction(() => window.animation.playing && window.animation.frame >= 15 * window.animation.fps + 3);
     const state = await getState(page);
     assert.equal(state.playing, true);
     assert.ok(state.audioTime >= 15 && state.audioTime < 18);
-    assert.ok(Math.abs(state.frame - Math.floor(state.audioTime * 30)) <= 2);
+    assert.ok(Math.abs(state.frame - Math.floor(state.audioTime * fps)) <= clockTolerance);
     assert.equal(state.seek, state.frame);
     return state;
   });
@@ -765,7 +896,7 @@ try {
     return { mutedAndUnmuted: true };
   });
 
-  await check('Complete 30-second playback stays synchronized and stops on exactly frame 899', async () => {
+  await check(`Complete 30-second playback stays synchronized and stops on exactly frame ${lastFrame}`, async () => {
     await page.evaluate(() => { window.animation.pause(); window.animation.seek(0); });
     await page.evaluate(() => document.querySelector('#play').click());
     const samples = [], deadline = performance.now() + 40000;
@@ -773,7 +904,7 @@ try {
       await delay(250);
       const sample = await getState(page);
       samples.push({ frame: sample.frame, audioTime: sample.audioTime, playing: sample.playing });
-      if (!sample.playing && sample.frame === 899) break;
+      if (!sample.playing && sample.frame === lastFrame) break;
     }
     const state = await getState(page);
     assert.ok(samples.length >= 50, 'Continuous playback ended too early');
@@ -781,19 +912,19 @@ try {
       assert.ok(samples[i].audioTime >= samples[i - 1].audioTime, 'Audio clock moved backward');
       assert.ok(samples[i].frame >= samples[i - 1].frame, 'Playback frame moved backward');
     }
-    const maximumFrameClockDifference = Math.max(...samples.map(s => Math.abs(s.frame - Math.min(899, Math.floor(s.audioTime * 30)))));
-    assert.ok(maximumFrameClockDifference <= 2, `Playback clock deviated by ${maximumFrameClockDifference} frames`);
-    assert.equal(state.frame, 899);
-    assert.equal(state.seek, 899);
+    const maximumFrameClockDifference = Math.max(...samples.map(s => Math.abs(s.frame - Math.min(lastFrame, Math.floor(s.audioTime * fps)))));
+    assert.ok(maximumFrameClockDifference <= clockTolerance, `Playback clock deviated by ${maximumFrameClockDifference} frames`);
+    assert.equal(state.frame, lastFrame);
+    assert.equal(state.seek, lastFrame);
     assert.equal(state.playing, false);
     assert.equal(state.audioPaused, true);
     // The generated PCM track and the picture both end at 30 seconds.
     assert.ok(state.audioTime >= 29.99 && state.audioTime <= 30.1, `Unexpected finish time: ${state.audioTime}`);
     assert.equal(state.label, '重播');
     assert.equal(state.time, '00:30 / 00:30');
-    assert.equal((await frameHash(page)).hash, baseline.get(899));
+    assert.equal((await frameHash(page)).hash, baseline.get(lastFrame));
     await delay(180);
-    assert.equal((await getState(page)).frame, 899);
+    assert.equal((await getState(page)).frame, lastFrame);
     return { state, maximumFrameClockDifference, samples };
   });
 
@@ -813,13 +944,13 @@ try {
 
   await check('Seeking to the final frame pauses and keeps the final drawing', async () => {
     await page.evaluate(() => window.animation.play());
-    await seekWithControl(page, 899);
+    await seekWithControl(page, lastFrame);
     const state = await getState(page);
-    assert.equal(state.frame, 899);
+    assert.equal(state.frame, lastFrame);
     assert.equal(state.playing, false);
     assert.equal(state.audioPaused, true);
     assert.equal(state.label, '重播');
-    assert.equal((await frameHash(page)).hash, baseline.get(899));
+    assert.equal((await frameHash(page)).hash, baseline.get(lastFrame));
     return state;
   });
 
@@ -848,9 +979,9 @@ try {
     const exportPage = await runtime.browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
     observe(exportPage);
     try {
-      await exportPage.goto(`${runtime.url}?render`);
+      await exportPage.goto(`${runtime.url}?render&fps=${fps}`);
       await exportPage.evaluate(() => window.animationReady);
-      for (const frame of [0, 428, 525, 899]) assert.equal((await frameHash(exportPage, frame)).hash, baseline.get(frame), `Export frame ${frame} differs from player`);
+      for (const frame of [0, 428, 525, 899].map(sceneFrame)) assert.equal((await frameHash(exportPage, frame)).hash, baseline.get(frame), `Export frame ${frame} differs from player`);
       const state = await exportPage.evaluate(() => { const r = document.querySelector('#film').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, controlsHidden: getComputedStyle(document.querySelector('.controls')).display === 'none' }; });
       assert.deepEqual(state, { x: 0, y: 0, width: 1920, height: 1080, controlsHidden: true });
       return state;
@@ -862,10 +993,10 @@ try {
     const exportPage = await runtime.browser.newPage({ viewport: { width: resolution.width, height: resolution.height }, deviceScaleFactor: 1 });
     observe(exportPage);
     try {
-      await exportPage.goto(`${runtime.url}?render&resolution=4k`);
+      await exportPage.goto(`${runtime.url}?render&resolution=4k&fps=${fps}`);
       await exportPage.evaluate(() => window.animationReady);
       const hashes = new Map();
-      for (const frame of [0, 428, 525, 899, 428, 0, 899]) {
+      for (const frame of [0, 428, 525, 899, 428, 0, 899].map(sceneFrame)) {
         const { hash } = await frameHash(exportPage, frame);
         if (hashes.has(frame)) assert.equal(hash, hashes.get(frame), `4K frame ${frame} changed after seeking`);
         else hashes.set(frame, hash);
@@ -878,7 +1009,7 @@ try {
       const png = await exportPage.screenshot();
       const info = await pngPixels(exportPage, png);
       assert.equal(info.width, resolution.width); assert.equal(info.height, resolution.height);
-      assert.equal(info.hash, hashes.get(899), '4K screenshot resampled or clipped the native canvas');
+      assert.equal(info.hash, hashes.get(lastFrame), '4K screenshot resampled or clipped the native canvas');
       await writeFile(path.join(artifactDir, 'export-4k.png'), png);
       return { ...state, hashes: Object.fromEntries(hashes), screenshotMatchesCanvas: true };
     } finally { await exportPage.close(); }
@@ -892,10 +1023,10 @@ try {
       observe(exportPage);
       let capture;
       try {
-        await exportPage.goto(`${runtime.url}?render&resolution=${name}`);
+        await exportPage.goto(`${runtime.url}?render&resolution=${name}&fps=${fps}`);
         await exportPage.evaluate(() => window.animationReady);
         capture = await createFrameCapture(exportPage, resolution);
-        for (const frame of [899, 0, 428, 427, 429, 525, 899]) {
+        for (const frame of [899, 0, 428, 427, 429, 525, 899].map(sceneFrame)) {
           await exportPage.evaluate(f => window.renderFrame(f), frame);
           const png = await capture.capture();
           const info = await pngPixels(exportPage, png);
@@ -915,12 +1046,12 @@ try {
     const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
     const handlers = new Map(signals.map(signal => [signal, process.listeners(signal)]));
     const resolution = selectResolution(['--resolution=4k']);
-    const managed = await openRenderer({ resolution, handleSignals: false });
+    const managed = await openRenderer({ resolution, fps, handleSignals: false });
     let capture;
     try {
       for (const signal of signals) assert.deepEqual(process.listeners(signal), handlers.get(signal), `Managed exporter installed a ${signal} handler`);
       capture = await createFrameCapture(managed.page, resolution);
-      for (const frame of [0, 428, 899]) {
+      for (const frame of [0, 428, 899].map(sceneFrame)) {
         await managed.page.evaluate(f => window.renderFrame(f), frame);
         const info = await pngPixels(managed.page, await capture.capture());
         assert.equal(info.width, resolution.width); assert.equal(info.height, resolution.height);
