@@ -31,8 +31,11 @@ export function starfield(c, f, x, y, w, h, seed = 6, count = 65) {
   c.restore();
 }
 
-export function space(c, f, x, y, w, h, seed = 6, count = 65, tint = C.dusk) {
-  c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip();
+/** `radius` rounds the sky so a well can tuck its corners behind the panels that frame it. */
+export function space(c, f, x, y, w, h, seed = 6, count = 65, tint = C.dusk, radius = 0) {
+  c.save(); c.beginPath();
+  if (radius > 0) c.roundRect(x, y, w, h, Math.min(radius, w / 2, h / 2)); else c.rect(x, y, w, h);
+  c.clip();
   const base = c.createLinearGradient(x, y, x + w * 0.75, y + h);
   base.addColorStop(0, C.space); base.addColorStop(0.6, tint); base.addColorStop(1, '#1a2546');
   c.fillStyle = base; c.fillRect(x, y, w, h);

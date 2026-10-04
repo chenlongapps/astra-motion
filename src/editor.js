@@ -14,10 +14,14 @@ export function scissors(c, x, y, s, angle = 0, opening = 0.5) {
   });
 }
 
+/** The window chrome shares one grid: 20px paper padding, 18px panel corners, and
+ *  dividers at y=102 / y=624, so no dark slot opens between two neighbouring panels. */
+const headerBand = (x, y, w, h, r) => `M${x} ${y + h} L${x} ${y + r} Q${x} ${y} ${x + r} ${y} L${x + w - r} ${y} Q${x + w} ${y} ${x + w} ${y + r} L${x + w} ${y + h} Z`;
+
 export function editorBackground(c, f) {
   c.save(); shadow(c, '#070e2555', 8, 12);
   box(c, 50, 28, 1820, 1020, C.paper, 27, 3.5); c.restore();
-  space(c, f, 54, 102, 1812, 522, 6006, 95);
+  space(c, f, 70, 102, 1780, 522, 6006, 95, C.dusk, 18);
   c.save(); c.globalAlpha *= 0.28;
   orbit(c, 960, 362, 425, 164, -0.2, C.ice, 1.5);
   orbit(c, 960, 362, 442, 171, -0.2, C.lilac, 0.8);
@@ -26,7 +30,8 @@ export function editorBackground(c, f) {
   spark(c, 1245, 234, 8, C.yellow, 0.2);
   text(c, '灵感观测中', 500, 548, 21, '#b8c3e0');
   text(c, 'ASTRA / 06', 1375, 571, 16, '#b8c3e0', 'right');
-  box(c, 50, 28, 1820, 74, C.panel, 21, 3);
+  path(c, headerBand(50, 28, 1820, 74, 27), C.panel, C.ink, 3);
+  c.save(); c.globalAlpha *= 0.28; c.translate(1.1, -0.8); path(c, headerBand(50, 28, 1820, 74, 27), null, C.ink, 1.2); c.restore();
   astraMark(c, 91, 65, 24, '#727cad');
   text(c, 'GPT-6 Astra', 133, 66, 34);
   box(c, 870, 43, 180, 44, C.well, 11, 2.6);
@@ -46,7 +51,7 @@ export function editorBackground(c, f) {
 function roundClip(c, x, y, w, h, r) { c.beginPath(); c.roundRect(x, y, w, h, r); c.clip(); }
 
 function palette(c, f) {
-  box(c, 70, 114, 360, 500, C.panel, 17, 3.2);
+  box(c, 70, 102, 360, 522, C.panel, 18, 3.2);
   const mode = f >= cues.textPanel && f < cues.beatDance ? 2 : f >= cues.transitions && f < cues.textPanel ? 1 : 0;
   const selectedTab = f >= cues.textTab && f < cues.beatDance ? 2 : mode;
   ['素材', '转场', '文字'].forEach((s, i) => { box(c, 85 + i * 111, 127, 105, 40, i === selectedTab ? C.yellow : C.well, 10, 2.5); text(c, s, 137 + i * 111, 148, 25, C.ink, 'center'); });
@@ -69,7 +74,7 @@ function palette(c, f) {
 }
 
 function adjustments(c, f) {
-  box(c, 1490, 114, 360, 500, C.panel, 17, 3.2);
+  box(c, 1490, 102, 360, 522, C.panel, 18, 3.2);
   text(c, '调整', 1515, 150, 31); star(c, 1591, 149, 13);
   const s = slidersAt(f); const values = [s.sparkle, s.flow, s.zoom, 1 / 3];
   ['闪光', '线条动感', '冲击缩放', '速度'].forEach((name, i) => {
@@ -96,7 +101,7 @@ function clip(c, kind, x, y, w, t, color, boring = false) {
 }
 
 function timeline(c, f) {
-  box(c, 70, 624, 1780, 414, C.panel, 18, 3.2);
+  box(c, 70, 624, 1780, 404, C.panel, 18, 3.2);
   line(c, [150, 752, 1830, 752], C.edge, 2);
   for (let i = 0; i <= 80; i++) {
     const x = 150 + i * 21; const major = i % 10 === 0;

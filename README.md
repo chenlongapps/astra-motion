@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <strong>中文</strong> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <a href="https://chenlongapps.github.io/astra-motion/">在线演示</a> ·
   <a href="#快速开始">快速开始</a>
 </p>
