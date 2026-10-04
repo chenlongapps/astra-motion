@@ -1,14 +1,18 @@
 import { Renderer, cues } from './renderer.js';
 import { FRAMES, FPS, W, clamp } from './sketch.js';
 import renderProfiles from './render-profiles.json' with { type: 'json' };
+import { exportVideo, getExportSupport } from './browser-export.js';
 
 const qs = id => document.getElementById(id);
 const canvas = qs('film'), audio = qs('soundtrack');
 const playButton = qs('play'), seek = qs('seek'), mute = qs('mute');
+const exportDialog = qs('export-dialog');
+const resolutionButtons = [...qs('resolution').querySelectorAll('button')];
 const params = new URLSearchParams(location.search), isRender = params.has('render');
 if (isRender) document.documentElement.classList.add('render-mode');
 let renderer, frame = 0, playing = false, raf = 0, ended = false;
-let serial = 0;
+let serial = 0, exporting = false, exportController, exportSupport, downloadUrl, downloadResolution;
+let exportResolution = '1080p';
 const icons = {
   play: '<path d="m8 5 11 7-11 7z"/>', pause: '<path d="M6 5h4v14H6zm8 0h4v14h-4z"/>',
   sound: '<path d="M4 9h4l5-4v14l-5-4H4zm13-1a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
@@ -33,7 +37,7 @@ function tick() {
 }
 function pause() { serial++; playing = false; audio.pause(); cancelAnimationFrame(raf); if (renderer) updateControls(); }
 async function play() {
-  if (!window.animation.ready) return;
+  if (!window.animation.ready || exporting || exportDialog.open) return;
   if (ended || frame >= FRAMES - 1) seekTo(0);
   const token = ++serial;
   try {
@@ -44,12 +48,13 @@ async function play() {
   } catch (e) { playing = false; updateControls(); const error = qs('error'); error.hidden = false; error.textContent = `音轨未能播放：${e instanceof Error ? e.message : String(e)}`; }
 }
 function seekTo(f) {
+  if (exporting || exportDialog.open) return;
   f = Math.floor(clamp(f, 0, FRAMES - 1)); ended = f === FRAMES - 1;
   audio.currentTime = f / FPS; showFrame(f); updateControls();
   if (ended && playing) pause();
 }
 function finish() { pause(); ended = true; showFrame(FRAMES - 1); updateControls(); }
-window.animation = { frame: 0, ready: false, playing: false, renderFrame: showFrame, cues, seek: seekTo, play, pause };
+window.animation = { frame: 0, ready: false, playing: false, exporting: false, renderFrame: showFrame, cues, seek: seekTo, play, pause };
 window.renderFrame = showFrame;
 window.animationReady = (async () => {
   const resolution = isRender ? params.get('resolution') ?? '1080p' : '1080p';
@@ -71,7 +76,7 @@ window.animationReady = (async () => {
 // The UI reports loading failures; exporters still receive the rejected promise.
 void window.animationReady.catch(() => {});
 playButton.addEventListener('click', () => { if (playing) pause(); else void play(); });
-qs('replay').addEventListener('click', () => { pause(); seekTo(0); void play(); });
+qs('replay').addEventListener('click', () => { if (exporting || exportDialog.open) return; pause(); seekTo(0); void play(); });
 seek.addEventListener('input', () => { seekTo(Number(seek.value)); });
 mute.addEventListener('click', () => { audio.muted = !audio.muted; mute.setAttribute('aria-pressed', String(audio.muted)); mute.setAttribute('aria-label', audio.muted ? '取消静音' : '静音'); mute.title = audio.muted ? '取消静音' : '静音'; mute.querySelector('svg').innerHTML = audio.muted ? icons.mute : icons.sound; });
 qs('fullscreen').addEventListener('click', async () => {
@@ -80,9 +85,182 @@ qs('fullscreen').addEventListener('click', async () => {
 audio.addEventListener('ended', finish);
 audio.addEventListener('pause', () => { if (playing && !audio.ended) { playing = false; cancelAnimationFrame(raf); updateControls(); } });
 document.addEventListener('keydown', e => {
-  if (!window.animation.ready || isRender || e.altKey || e.ctrlKey || e.metaKey) return;
-  const focused = e.target; if (focused.matches('input, button, a, textarea')) return;
+  if (!window.animation.ready || isRender || exporting || exportDialog.open || e.altKey || e.ctrlKey || e.metaKey) return;
+  const focused = e.target; if (focused.matches('input, button, a, textarea, select')) return;
   if (e.code === 'Space') { e.preventDefault(); if (playing) pause(); else void play(); }
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { e.preventDefault(); pause(); seekTo(frame + (e.code === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? FPS : 1)); }
   if (e.code === 'KeyM') mute.click();
 });
+
+function updateExportAvailability() {
+  const supported = !!exportSupport?.[exportResolution]?.supported;
+  for (const button of resolutionButtons) {
+    button.disabled = exporting || !exportSupport?.[button.value]?.supported;
+    button.setAttribute('aria-pressed', String(button.value === exportResolution));
+  }
+  qs('export').disabled = isRender || exporting || !window.animation.ready;
+  qs('export-start').disabled = exporting || !supported;
+  qs('download').disabled = exporting || !downloadUrl;
+  qs('export-close').disabled = exporting;
+  qs('export-again').disabled = exporting;
+}
+function updateExportDetails() {
+  const resolution = exportResolution, profile = renderProfiles[resolution];
+  qs('export-filename').textContent = `astra-motion-${resolution}.mp4`;
+  qs('export-dimensions').textContent = `${resolution === '4k' ? '4K UHD' : '1080p'} · ${profile.width} × ${profile.height}`;
+}
+function showSettingsStatus() {
+  const support = exportSupport?.[exportResolution];
+  qs('export-status').textContent = support ? support.reason || '导出完整 30 秒短片' : '正在检查导出能力…';
+}
+function setExportState(state) {
+  exportDialog.dataset.state = state;
+  qs('export-quality').hidden = state === 'complete';
+  qs('export-result').hidden = state !== 'complete';
+  qs('export-progress-panel').hidden = state !== 'exporting';
+  qs('export-percent').hidden = state !== 'exporting';
+  qs('export-start').hidden = state !== 'settings';
+  qs('export-cancel').hidden = state !== 'exporting';
+  qs('download').hidden = state !== 'complete';
+  qs('export-again').hidden = state !== 'complete';
+  qs('export-footer-note').textContent = state === 'complete' ? '文件已保留，可重复下载' : state === 'exporting' ? '正在生成完整短片' : '导出后，手动下载到设备';
+  updateExportAvailability();
+}
+function releaseDownload() {
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = downloadResolution = undefined;
+  qs('download').disabled = true;
+}
+function setExportBusy(busy) {
+  exporting = busy; window.animation.exporting = busy;
+  exportDialog.setAttribute('aria-busy', String(busy));
+  [playButton, seek, qs('replay')].forEach(button => button.disabled = busy);
+  qs('export-cancel').disabled = false;
+  updateExportAvailability();
+}
+window.exportReady = isRender ? Promise.resolve() : window.animationReady.then(async () => {
+  updateExportAvailability();
+  qs('export-status').textContent = '正在检查导出能力…';
+  exportSupport = await getExportSupport();
+  for (const button of resolutionButtons) {
+    const support = exportSupport[button.value];
+    button.title = support.reason;
+    button.querySelector('.resolution-note').textContent = support.supported ? button.value === '4k' ? 'Ultra HD' : 'Full HD' : '设备不支持';
+  }
+  if (!exportSupport[exportResolution].supported) {
+    const available = Object.keys(exportSupport).find(value => exportSupport[value].supported);
+    if (available) exportResolution = available;
+  }
+  updateExportDetails(); showSettingsStatus();
+  updateExportAvailability();
+}).catch(() => {
+  if (window.animation.ready) qs('export-status').textContent = '无法检查导出能力，请刷新后重试。';
+  updateExportAvailability();
+});
+qs('export').addEventListener('click', () => {
+  if (isRender || exporting || !window.animation.ready || exportDialog.open) return;
+  pause();
+  if (downloadUrl && exportDialog.dataset.state === 'settings') {
+    exportResolution = downloadResolution; updateExportDetails(); setExportState('complete');
+    qs('export-error').hidden = true; qs('export-status').textContent = '文件已就绪，可以下载';
+  }
+  const preview = qs('export-preview');
+  preview.getContext('2d').drawImage(canvas, 0, 0, preview.width, preview.height);
+  preview.setAttribute('aria-label', `当前第 ${frame + 1} 帧的导出预览`);
+  qs('export-preview-frame').textContent = `第 ${frame + 1} 帧`;
+  qs('export-preview-time').textContent = `00:${String(Math.floor(frame / FPS)).padStart(2, '0')}`;
+  exportDialog.showModal(); document.documentElement.classList.add('export-open');
+  const selectedButton = resolutionButtons.find(button => button.value === exportResolution);
+  const focusTarget = exportDialog.dataset.state === 'complete' ? qs('download') : selectedButton.disabled ? qs('export-close') : selectedButton;
+  focusTarget.focus();
+});
+function closeExportDialog() { if (!exporting) exportDialog.close(); }
+qs('export-close').addEventListener('click', closeExportDialog);
+exportDialog.addEventListener('cancel', event => { event.preventDefault(); closeExportDialog(); });
+exportDialog.addEventListener('close', () => {
+  if (exportDialog.open) return;
+  document.documentElement.classList.remove('export-open');
+  qs('export').focus({ preventScroll: true });
+});
+exportDialog.addEventListener('keydown', event => {
+  if (event.key !== 'Tab') return;
+  const buttons = [...exportDialog.querySelectorAll('button:not(:disabled)')].filter(node => node.getClientRects().length > 0);
+  const first = buttons[0], last = buttons.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+for (const button of resolutionButtons) button.addEventListener('click', () => {
+  if (exporting || exportDialog.dataset.state !== 'settings' || !exportSupport?.[button.value]?.supported) return;
+  exportResolution = button.value;
+  updateExportAvailability();
+  qs('export-error').hidden = true;
+  updateExportDetails(); showSettingsStatus();
+});
+qs('resolution').addEventListener('keydown', event => {
+  if (!resolutionButtons.includes(event.target) || event.altKey || event.ctrlKey || event.metaKey || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const available = resolutionButtons.filter(button => !button.disabled);
+  const index = available.indexOf(event.target);
+  const next = event.key === 'Home' ? available[0] : event.key === 'End' ? available.at(-1) : available[(index + (event.key === 'ArrowRight' ? 1 : -1) + available.length) % available.length];
+  if (!next) return;
+  event.preventDefault(); next.focus(); next.click();
+});
+qs('export-again').addEventListener('click', () => {
+  if (exporting || !exportDialog.open) return;
+  qs('export-error').hidden = true;
+  setExportState('settings'); showSettingsStatus();
+  resolutionButtons.find(button => button.value === exportResolution).focus();
+});
+qs('export-start').addEventListener('click', async () => {
+  if (isRender || exporting || !exportDialog.open || exportDialog.dataset.state !== 'settings' || !window.animation.ready || !exportSupport?.[exportResolution]?.supported) return;
+  const resolution = exportResolution, label = resolution === '4k' ? '4K' : '1080p';
+  pause(); releaseDownload(); setExportBusy(true);
+  setExportState('exporting');
+  exportController = new AbortController();
+  qs('export-error').hidden = true;
+  qs('export-progress').value = 0; qs('export-percent').value = '0%';
+  qs('export-progress').setAttribute('aria-valuetext', `0%，0 / ${FRAMES} 帧`);
+  qs('export-status').textContent = '正在准备配乐…';
+  qs('export-cancel').focus();
+  let nextState = 'settings', lastStage;
+  try {
+    const blob = await exportVideo({ resolution, signal: exportController.signal, onProgress({ stage, completed, total }) {
+      qs('export-progress').max = total;
+      qs('export-progress').value = completed;
+      const percent = `${Math.floor(completed / total * 100)}%`;
+      qs('export-percent').value = percent;
+      qs('export-progress').setAttribute('aria-valuetext', `${percent}，${completed} / ${total} 帧`);
+      if (exportController.signal.aborted) return;
+      if (stage === 'preparing') qs('export-status').textContent = '正在准备配乐…';
+      else if (stage === 'finalizing') qs('export-status').textContent = '正在封装 MP4…';
+      else if (stage !== lastStage || completed % 15 === 0 || completed === total) qs('export-status').textContent = `正在导出 ${label} · ${completed} / ${total} 帧`;
+      lastStage = stage;
+    } });
+    if (exportController.signal.aborted) throw new DOMException('已取消导出。', 'AbortError');
+    downloadUrl = URL.createObjectURL(blob);
+    downloadResolution = resolution;
+    qs('download').dataset.filename = `astra-motion-${resolution}.mp4`;
+    qs('export-size').textContent = `${(blob.size / 1024 ** 2).toFixed(1)} MB`;
+    qs('export-status').textContent = '文件已就绪，可以下载';
+    nextState = 'complete';
+  } catch (error) {
+    if (error?.name === 'AbortError') qs('export-status').textContent = '已取消导出，可以重新开始';
+    else {
+      qs('export-status').textContent = '导出失败，请重试';
+      qs('export-error').textContent = error instanceof Error ? error.message : String(error);
+      qs('export-error').hidden = false;
+    }
+  } finally {
+    exportController = undefined; setExportBusy(false); setExportState(nextState);
+    if (exportDialog.open) (nextState === 'complete' ? qs('download') : qs('export-start')).focus();
+  }
+});
+qs('export-cancel').addEventListener('click', () => {
+  if (!exportController) return;
+  qs('export-cancel').disabled = true; qs('export-status').textContent = '正在取消…'; exportController.abort();
+});
+qs('download').addEventListener('click', () => {
+  if (!downloadUrl || exporting) return;
+  const link = document.createElement('a'); link.href = downloadUrl; link.download = qs('download').dataset.filename;
+  document.body.append(link); link.click(); link.remove();
+});
+window.addEventListener('pagehide', () => { exportController?.abort(); releaseDownload(); });

@@ -29,6 +29,8 @@
 
 背景录音及当前混合音轨包含用户提供的第三方录音内容。原始作者与独立再许可声明尚未确认，权利归其原权利人；录音不属于字体的 OFL 许可范围，项目未为其声明新的许可证。
 
+网页导出使用的 `public/audio/generated.m4a` 是上述混合 WAV 的 AAC-LC 编码副本，来源与归属相同。网页编码调用浏览器原生 WebCodecs；AAC 读取和 MP4 封装由项目原生 JavaScript 实现，没有随附第三方 JavaScript 媒体库。
+
 动作音效继续由 `scripts/audio/score.mjs` 与 `scripts/audio/synth.mjs` 使用数学振荡器、滤波噪声和固定随机种子本地生成，无第三方录音乐器采样或外部音效生成服务。替换 BGM 时保留音效通道、参数及共享时间轴。每次混音时，背景源 SHA-256、音效 PCM SHA-256、最终 PCM SHA-256 与响度写入 `output/audio-generation.json`。
 
 ## Codex 宠物

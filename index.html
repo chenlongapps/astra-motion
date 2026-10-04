@@ -11,7 +11,7 @@
   </head>
   <body>
     <main class="player" aria-label="GPT-6 Astra 动画播放器">
-      <div class="heading"><a class="wordmark" href="./">GPT-6 <span>Astra</span><span class="brand-star" aria-hidden="true">✦</span></a><span class="edition">手绘短片</span><span class="spec">30 秒 / 1080P</span></div>
+      <div class="heading"><a class="wordmark" href="./">GPT-6 <span>Astra</span><span class="brand-star" aria-hidden="true">✦</span></a><span class="edition">手绘短片</span><span class="spec">30 秒 / 1080P</span><button id="export" class="export-entry" aria-haspopup="dialog" aria-controls="export-dialog" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M5 14v6h14v-6"/></svg><span>导出</span></button></div>
       <div class="stage"><canvas id="film" width="1920" height="1080" aria-label="30 秒手绘宇宙动画，使用下方按钮播放" role="img"></canvas><div id="loading" role="status">正在收集星光…</div></div>
       <div class="controls" aria-label="播放控制">
         <button id="play" aria-label="播放" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg><span>播放</span></button>
@@ -23,6 +23,45 @@
       </div>
       <footer><span>灵感，奔赴群星。</span><span>空格 播放 / 暂停 · ← → 逐帧</span></footer>
       <p id="error" role="alert" hidden></p>
+      <dialog id="export-dialog" class="export-dialog" aria-labelledby="export-title" aria-describedby="export-description" aria-busy="false" data-state="settings">
+        <div class="export-header">
+          <div><h2 id="export-title">导出视频</h2><p id="export-description">完整短片 · 含配乐与音效</p></div>
+          <button id="export-close" class="icon-button" aria-label="关闭导出窗口" title="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+        <div class="export-body">
+          <figure class="export-preview-panel">
+            <div class="export-preview"><canvas id="export-preview" width="640" height="360" role="img" aria-label="当前画面的导出预览"></canvas><span id="export-preview-time">00:00</span></div>
+            <figcaption><span>当前画面</span><span id="export-preview-frame">第 1 帧</span></figcaption>
+          </figure>
+          <section class="export-settings" aria-label="导出设置">
+            <dl class="export-file"><dt>文件名</dt><dd id="export-filename">astra-motion-1080p.mp4</dd></dl>
+            <dl class="export-specs"><div><dt>格式</dt><dd>MP4</dd></div><div><dt>时长</dt><dd>30 秒</dd></div><div><dt>帧率</dt><dd>30 fps</dd></div></dl>
+            <div id="export-quality" class="export-quality">
+              <p id="resolution-label" class="export-quality-label">画质</p>
+              <div id="resolution" class="resolution-options" role="group" aria-labelledby="resolution-label" aria-describedby="export-dimensions">
+                <button id="resolution-1080p" class="resolution-option" type="button" value="1080p" aria-pressed="true" autofocus disabled><span>1080p</span><span class="resolution-note">Full HD</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+                <button id="resolution-4k" class="resolution-option" type="button" value="4k" aria-pressed="false" disabled><span>4K UHD</span><span class="resolution-note">Ultra HD</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+              </div>
+            </div>
+            <p id="export-dimensions">1920 × 1080</p>
+            <div id="export-result" class="export-result" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg><div><p>导出完成</p><span id="export-size"></span></div></div>
+            <div class="export-feedback">
+              <div class="export-status-row"><p id="export-status" role="status">正在检查导出能力…</p><output id="export-percent" hidden>0%</output></div>
+              <div id="export-progress-panel" hidden><progress id="export-progress" max="900" value="0" aria-label="视频导出进度"></progress></div>
+              <p id="export-error" role="alert" hidden></p>
+            </div>
+          </section>
+        </div>
+        <div class="export-footer">
+          <p id="export-footer-note">导出后，手动下载到设备</p>
+          <div class="export-actions">
+            <button id="export-again" class="export-secondary" hidden>重新导出</button>
+            <button id="export-cancel" class="export-secondary" hidden>取消导出</button>
+            <button id="export-start" class="export-primary" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M5 14v6h14v-6"/></svg><span>开始导出</span></button>
+            <button id="download" class="export-primary" disabled hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4"/></svg><span>下载 MP4</span></button>
+          </div>
+        </div>
+      </dialog>
     </main>
     <audio id="soundtrack" preload="auto" src="./audio/generated.wav"></audio>
     <script type="module" src="./src/main.js"></script>

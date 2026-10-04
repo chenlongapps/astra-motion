@@ -2,9 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { root } from './render-options.mjs';
+import { verifyExportAudio } from './export-audio.mjs';
 
 // Native ES modules need no bundler. Validate syntax, then stage a self-contained
 // website; a failed copy leaves the existing deployment untouched.
+await verifyExportAudio();
 for (const name of await readdir(path.join(root, 'src'))) {
   if (name.endsWith('.js')) execFileSync(process.execPath, ['--check', path.join(root, 'src', name)], { stdio: 'inherit' });
 }

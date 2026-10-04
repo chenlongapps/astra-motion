@@ -20,12 +20,16 @@ test('static server serves native modules and media ranges without exposing repo
   await writeFile(path.join(directory, 'index.html'), '<h1>Player</h1>');
   await writeFile(path.join(directory, 'src/main.js'), 'export const ready = true;');
   await writeFile(path.join(directory, 'public/audio/generated.wav'), '0123456789');
+  await writeFile(path.join(directory, 'public/audio/generated.m4a'), 'AAC resource');
   await writeFile(path.join(directory, '.git/config'), 'private');
   const server = await createStaticServer({ directory });
   t.after(() => server.close());
   assert.match(await (await fetch(server.url)).text(), /Player/);
   const module = await fetch(`${server.url}src/main.js`);
   assert.match(module.headers.get('content-type'), /javascript/);
+  const exportAudio = await fetch(`${server.url}audio/generated.m4a`);
+  assert.equal(exportAudio.headers.get('content-type'), 'audio/mp4');
+  assert.equal(await exportAudio.text(), 'AAC resource');
   const media = await fetch(`${server.url}audio/generated.wav`, { headers: { Range: 'bytes=2-5' } });
   assert.equal(media.status, 206); assert.equal(media.headers.get('content-range'), 'bytes 2-5/10'); assert.equal(await media.text(), '2345');
   const head = await fetch(`${server.url}audio/generated.wav`, { method: 'HEAD' });

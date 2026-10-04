@@ -7,6 +7,7 @@ import { generateAudio, prepareSoundtrack, measureAudio, pcmHash, root, soundtra
 import { compose } from './audio/score.mjs';
 import { SAMPLE_RATE, readPcmWav, renderBus, renderSoundtrack, floatWav } from './audio/synth.mjs';
 import { selectResolution } from './render-options.mjs';
+import { verifyExportAudio } from './export-audio.mjs';
 
 // Check real rendered PCM and decoded AAC, rather than only event timestamps.
 const videoOnly = process.argv.includes('--video');
@@ -78,11 +79,19 @@ try {
       return { duration: current.duration, samplesPerChannel: current.samples, channels: stats, integratedLufs: measured.input_i, truePeakDbtp: measured.input_tp };
     });
     directory = await mkdtemp(path.join(tmpdir(), 'astra-motion-audio-verify-'));
+    await check('Web AAC matches the bundled WAV and preserves cue alignment after priming removal', async () => {
+      const manifest = await verifyExportAudio();
+      const bytes = execFileSync('ffmpeg', ['-v', 'error', '-i', path.join(root, 'public/audio/generated.m4a'), '-map', '0:a:0', '-af', 'atrim=end_sample=1440000', '-f', 'f32le', 'pipe:1'], { maxBuffer: 20 * 2 ** 20 });
+      assert.equal(bytes.length, current.samples * 8);
+      const decoded = Float32Array.from({ length: current.samples }, (_, i) => (bytes.readFloatLE(i * 8) + bytes.readFloatLE(i * 8 + 4)) / 2);
+      return { manifest, alignment: keyFrames.map(frame => alignment(mono(current.signal), decoded, frame)) };
+    });
     await check('Two independent generations reproduce the bundled PCM byte for byte', async () => {
-      const first = await generateAudio({ file: path.join(directory, 'first.wav'), reportFile: null });
+      const first = await generateAudio({ file: path.join(directory, 'generated.wav'), reportFile: null, exportFiles: true });
       const second = await generateAudio({ file: path.join(directory, 'second.wav'), reportFile: null });
+      await verifyExportAudio(directory);
       assert.equal(first.pcmSha256, second.pcmSha256); assert.equal(first.pcmSha256, pcmHash(current.data));
-      return { pcmSha256: first.pcmSha256, independentGenerations: 2, matchesBundledAsset: true };
+      return { pcmSha256: first.pcmSha256, independentGenerations: 2, matchesBundledAsset: true, generatedWebAudioValid: true };
     });
     const score = compose(timing);
     await check('All action effects become audible within one frame of their visual cue', async () => {

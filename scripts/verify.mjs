@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openRenderer, output } from './browser.mjs';
 import { selectResolution } from './render-options.mjs';
@@ -70,6 +71,46 @@ async function waitForReady(page) {
   await page.waitForFunction(() => document.querySelector('#soundtrack').readyState >= HTMLMediaElement.HAVE_FUTURE_DATA);
 }
 
+async function pressKey(page, key, modifiers = 0) {
+  const code = { Enter: 13, Escape: 27, Tab: 9, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35 }[key];
+  const params = { key, code: key, windowsVirtualKeyCode: code, modifiers };
+  await page.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params, ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+  await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+}
+
+async function openExportDialog(page) {
+  await page.evaluate(() => document.querySelector('#export').click());
+  await page.waitForFunction(() => document.querySelector('#export-dialog').open);
+}
+
+async function dialogLayout(page, viewport, filename) {
+  await page.setViewportSize(viewport);
+  const metrics = await page.evaluate(() => {
+    const dialog = document.querySelector('#export-dialog'), body = dialog.querySelector('.export-body');
+    const box = dialog.getBoundingClientRect(), preview = dialog.querySelector('.export-preview-panel').getBoundingClientRect(), settings = dialog.querySelector('.export-settings').getBoundingClientRect();
+    const actions = [...dialog.querySelectorAll('.export-actions button')].filter(node => node.getClientRects().length);
+    return {
+      state: dialog.dataset.state, modal: dialog.matches(':modal'),
+      viewport: { width: innerWidth, height: innerHeight },
+      dialog: { x: box.x, y: box.y, right: box.right, bottom: box.bottom },
+      body: { clientHeight: body.clientHeight, scrollHeight: body.scrollHeight },
+      twoColumns: preview.right <= settings.x, stacked: settings.y >= preview.bottom,
+      overflow: document.documentElement.scrollWidth > innerWidth || dialog.scrollWidth > dialog.clientWidth || body.scrollWidth > body.clientWidth,
+      actionsVisible: actions.length > 0 && actions.every(node => { const b = node.getBoundingClientRect(); return b.x >= 0 && b.right <= innerWidth && b.y >= 0 && b.bottom <= innerHeight; }),
+    };
+  });
+  assert.ok(metrics.modal, 'Export window is not modal');
+  assert.ok(metrics.dialog.x >= 0 && metrics.dialog.right <= viewport.width && metrics.dialog.y >= 0 && metrics.dialog.bottom <= viewport.height, 'Export window extends outside the viewport');
+  assert.equal(metrics.overflow, false, 'Export window has horizontal overflow');
+  assert.ok(metrics.actionsVisible, 'Export actions are outside the viewport');
+  assert.ok(viewport.width > 650 ? metrics.twoColumns : metrics.stacked, 'Export preview and settings use the wrong layout');
+  if (viewport.height <= 480) assert.ok(metrics.body.scrollHeight > metrics.body.clientHeight, 'Short export window should scroll internally');
+  const target = path.join(artifactDir, filename);
+  await page.screenshot({ path: target });
+  report.screenshots[filename.replace('.png', '')] = path.relative(output, target);
+  return metrics;
+}
+
 async function layout(page, viewport, filename) {
   await page.setViewportSize(viewport);
   await page.evaluate(() => { window.animation.pause(); window.animation.seek(420); });
@@ -82,6 +123,9 @@ async function layout(page, viewport, filename) {
       canvas: { x: box.x, y: box.y, width: box.width, height: box.height, nativeWidth: canvas.width, nativeHeight: canvas.height },
       controls: { x: controls.x, y: controls.y, right: controls.right, bottom: controls.bottom },
       controlsVisible: [...document.querySelectorAll('.controls button, .controls input')].every(node => { const b = node.getBoundingClientRect(); return b.width > 0 && b.height > 0 && b.x >= 0 && b.right <= innerWidth; }),
+      export: (() => { const b = document.querySelector('#export').getBoundingClientRect(); return { x: b.x, y: b.y, right: b.right, bottom: b.bottom, width: b.width, height: b.height }; })(),
+      headingRight: document.querySelector('.heading').getBoundingClientRect().right,
+      dialogClosed: !document.querySelector('#export-dialog').open,
     };
   });
   assert.equal(metrics.documentWidth, viewport.width, 'Page has horizontal overflow');
@@ -91,6 +135,10 @@ async function layout(page, viewport, filename) {
   assert.ok(metrics.canvas.x >= 0 && metrics.canvas.x + metrics.canvas.width <= viewport.width + 1, 'Canvas extends outside viewport');
   assert.ok(metrics.controls.y >= metrics.canvas.y + metrics.canvas.height, 'Controls overlap the animation');
   assert.ok(metrics.controlsVisible, 'Some controls extend outside the viewport');
+  assert.ok(metrics.dialogClosed, 'Export window should be closed');
+  assert.ok(metrics.export.width > 0 && metrics.export.height > 0 && metrics.export.x >= 0 && metrics.export.right <= viewport.width, 'Export entry extends outside the viewport');
+  assert.ok(metrics.export.bottom <= metrics.canvas.y, 'Export entry should be above the animation');
+  assert.ok(Math.abs(metrics.export.right - metrics.headingRight) < 1, 'Export entry should be at the right edge of the heading');
   const target = path.join(artifactDir, filename);
   await page.screenshot({ path: target, fullPage: true });
   report.screenshots[filename.replace('.png', '')] = path.relative(output, target);
@@ -106,6 +154,263 @@ try {
   // responses, as well as runtime failures, are included in the report.
   await page.goto(runtime.url);
   await waitForReady(page);
+
+  await check('Web export enables supported resolutions without loading its AAC resource', async () => {
+    await page.evaluate(() => window.exportReady);
+    const state = await page.evaluate(() => ({ resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, exportDisabled: document.querySelector('#export').disabled, startDisabled: document.querySelector('#export-start').disabled, downloadDisabled: document.querySelector('#download').disabled, dialogClosed: !document.querySelector('#export-dialog').open, busy: document.querySelector('#export-dialog').getAttribute('aria-busy'), audioLoaded: performance.getEntriesByType('resource').some(entry => entry.name.endsWith('generated.m4a')) }));
+    assert.deepEqual(state, { resolution: '1080p', exportDisabled: false, startDisabled: false, downloadDisabled: true, dialogClosed: true, busy: 'false', audioLoaded: false });
+    return state;
+  });
+
+  await check('Export dialog pauses at the current frame, traps keyboard focus, and returns it on close', async () => {
+    await page.evaluate(async () => { window.animation.seek(321); await window.animation.play(); });
+    await page.waitForFunction(() => window.animation.playing);
+    await page.evaluate(() => document.querySelector('#export').focus());
+    await pressKey(page, 'Enter');
+    await page.waitForFunction(() => document.querySelector('#export-dialog').open);
+    const opened = await page.evaluate(() => {
+      const preview = document.querySelector('#export-preview'), copy = document.createElement('canvas');
+      copy.width = preview.width; copy.height = preview.height; copy.getContext('2d').drawImage(document.querySelector('#film'), 0, 0, copy.width, copy.height);
+      const expected = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data, actual = preview.getContext('2d').getImageData(0, 0, preview.width, preview.height).data;
+      return { frame: window.animation.frame, playing: window.animation.playing, paused: document.querySelector('#soundtrack').paused, modal: document.querySelector('#export-dialog').matches(':modal'), focused: document.activeElement.id, snapshotMatches: actual.every((value, i) => value === expected[i]), filename: document.querySelector('#export-filename').textContent };
+    });
+    assert.ok(opened.modal && opened.paused && opened.snapshotMatches, JSON.stringify(opened)); assert.equal(opened.playing, false);
+    assert.equal(opened.focused, 'resolution-1080p'); assert.equal(opened.filename, 'astra-motion-1080p.mp4');
+    await page.evaluate(() => document.querySelector('#export-start').focus());
+    await pressKey(page, 'Tab');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'export-close');
+    await pressKey(page, 'Tab', 8);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'export-start');
+    await page.evaluate(async () => { await window.animation.play(); window.animation.seek(789); document.querySelector('#export-dialog').dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', bubbles: true })); });
+    assert.equal((await getState(page)).frame, opened.frame);
+    assert.equal((await getState(page)).playing, false);
+    await pressKey(page, 'Escape');
+    await page.waitForFunction(() => !document.querySelector('#export-dialog').open && document.activeElement.id === 'export');
+    await openExportDialog(page);
+    await page.evaluate(() => document.querySelector('#export-close').click());
+    await page.waitForFunction(() => !document.querySelector('#export-dialog').open && document.activeElement.id === 'export');
+    assert.equal((await getState(page)).frame, opened.frame);
+    return { ...opened, keyboardFocusContained: true, escapeAndCloseRestoreFocus: true, reopenPreservesFrame: true };
+  });
+
+  await check('Unsupported WebCodecs leaves normal playback ready with an actionable export message', async () => {
+    const unsupported = await runtime.browser.newPage();
+    try {
+      await unsupported.send('Page.addScriptToEvaluateOnNewDocument', { source: 'Object.defineProperty(window, "VideoEncoder", { value: undefined, configurable: true });' });
+      await unsupported.goto(runtime.url);
+      await unsupported.evaluate(() => window.exportReady);
+      await openExportDialog(unsupported);
+      const state = await unsupported.evaluate(() => ({ ready: window.animation.ready, playEnabled: !document.querySelector('#play').disabled, entryEnabled: !document.querySelector('#export').disabled, startDisabled: document.querySelector('#export-start').disabled, resolutionDisabled: [...document.querySelectorAll('#resolution button')].every(button => button.disabled), focused: document.activeElement.id, message: document.querySelector('#export-status').textContent }));
+      assert.ok(state.ready && state.playEnabled && state.entryEnabled && state.startDisabled && state.resolutionDisabled);
+      assert.equal(state.focused, 'export-close');
+      assert.match(state.message, /Chrome|Edge/);
+      assert.equal(unsupported.errors.length, 0);
+      return state;
+    } finally { await unsupported.close(); }
+  });
+
+  await check('Unsupported 4K is explicitly labelled while 1080p export remains available', async () => {
+    const limited = await runtime.browser.newPage();
+    try {
+      await limited.send('Page.addScriptToEvaluateOnNewDocument', { source: 'const nativeSupport = VideoEncoder.isConfigSupported.bind(VideoEncoder); VideoEncoder.isConfigSupported = async config => config.width === 3840 ? { supported: false, config } : nativeSupport(config);' });
+      await limited.goto(runtime.url); await limited.evaluate(() => window.exportReady);
+      await openExportDialog(limited);
+      await limited.evaluate(() => document.querySelector('#resolution-4k').dispatchEvent(new Event('click')));
+      await pressKey(limited, 'ArrowRight');
+      const state = await limited.evaluate(() => ({ exportEnabled: !document.querySelector('#export-start').disabled, resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, disabled: document.querySelector('#resolution-4k').disabled, label: document.querySelector('#resolution-4k').textContent, focused: document.activeElement.id }));
+      assert.ok(state.exportEnabled && state.disabled); assert.equal(state.resolution, '1080p'); assert.match(state.label, /设备不支持/);
+      assert.equal(state.focused, 'resolution-1080p');
+      return state;
+    } finally { await limited.close(); }
+  });
+
+  await check('Missing AAC and encoder errors restore controls and preserve the preview position', async () => {
+    const fault = await runtime.browser.newPage();
+    try {
+      await fault.goto(runtime.url); await fault.evaluate(() => window.exportReady);
+      await fault.send('Network.setBlockedURLs', { urls: ['*generated.m4a'] });
+      await fault.evaluate(() => window.animation.seek(321));
+      await openExportDialog(fault);
+      await fault.evaluate(() => document.querySelector('#export-start').click());
+      await fault.waitForFunction(() => !document.querySelector('#export-error').hidden && document.querySelector('#export-dialog').getAttribute('aria-busy') === 'false');
+      assert.equal(await fault.evaluate(() => window.animation.frame), 321);
+      await fault.send('Network.setBlockedURLs', { urls: [] });
+      await fault.evaluate(() => {
+        const NativeEncoder = VideoEncoder;
+        window.nativeEncoder = NativeEncoder;
+        window.VideoEncoder = class extends NativeEncoder {
+          constructor(init) { super(init); this.failEncoding = () => init.error(new Error('simulated encoding failure')); }
+          encode() { queueMicrotask(this.failEncoding); }
+        };
+        document.querySelector('#export-start').click();
+      });
+      await fault.waitForFunction(() => !document.querySelector('#export-error').hidden && document.querySelector('#export-dialog').getAttribute('aria-busy') === 'false');
+      const state = await fault.evaluate(() => ({ frame: window.animation.frame, playEnabled: !document.querySelector('#play').disabled, seekEnabled: !document.querySelector('#seek').disabled, exportEnabled: !document.querySelector('#export-start').disabled, closeEnabled: !document.querySelector('#export-close').disabled, settingsEnabled: !document.querySelector('#resolution button[aria-pressed="true"]').disabled, downloadDisabled: document.querySelector('#download').disabled, focused: document.activeElement.id, state: document.querySelector('#export-dialog').dataset.state, error: document.querySelector('#export-error').textContent }));
+      assert.equal(state.frame, 321); assert.ok(state.playEnabled && state.seekEnabled && state.exportEnabled && state.closeEnabled && state.settingsEnabled && state.downloadDisabled);
+      assert.equal(state.focused, 'export-start'); assert.equal(state.state, 'settings');
+      assert.match(state.error, /simulated encoding failure/);
+      await fault.evaluate(() => { window.VideoEncoder = window.nativeEncoder; document.querySelector('#export-start').click(); });
+      await fault.waitForFunction(() => document.querySelector('#export-progress').value >= 1 && document.querySelector('#export-error').hidden);
+      await fault.evaluate(() => document.querySelector('#export-cancel').click());
+      await fault.waitForFunction(() => !window.animation.exporting);
+      assert.equal(await fault.evaluate(() => document.querySelector('#export-dialog').dataset.state), 'settings');
+      assert.equal(fault.errors.length, 0);
+      return state;
+    } finally { await fault.close(); }
+  });
+
+  await check('Cancellation interrupts a full encoder queue and ignores duplicate export or playback actions', async () => {
+    const cancelled = await runtime.browser.newPage();
+    try {
+      await cancelled.goto(runtime.url); await cancelled.evaluate(() => window.exportReady);
+      await cancelled.evaluate(() => {
+        const support = VideoEncoder.isConfigSupported.bind(VideoEncoder);
+        window.encoderInstances = 0; window.encoderCloses = 0;
+        window.VideoEncoder = class extends EventTarget {
+          static isConfigSupported(config) { return support(config); }
+          constructor() { super(); window.encoderInstances++; this.state = 'unconfigured'; this.encodeQueueSize = 0; }
+          configure() { this.state = 'configured'; }
+          encode() { this.encodeQueueSize++; }
+          close() { this.state = 'closed'; window.encoderCloses++; }
+        };
+        window.animation.seek(456); document.querySelector('#export').click(); document.querySelector('#export-start').click();
+        document.querySelector('#export-start').dispatchEvent(new Event('click'));
+      });
+      await cancelled.waitForFunction(() => document.querySelector('#export-progress').value >= 3);
+      const busy = await cancelled.evaluate(async () => {
+        await window.animation.play(); window.animation.seek(789);
+        document.querySelector('#export-close').click();
+        document.querySelector('#resolution-4k').dispatchEvent(new Event('click'));
+        return { frame: window.animation.frame, playing: window.animation.playing, disabled: ['play', 'replay', 'seek', 'resolution-1080p', 'resolution-4k', 'export', 'export-start', 'export-close', 'download'].every(id => document.getElementById(id).disabled), resolution: document.querySelector('#resolution button[aria-pressed="true"]').value, instances: window.encoderInstances, focused: document.activeElement.id };
+      });
+      assert.equal(busy.frame, 456); assert.equal(busy.playing, false); assert.equal(busy.instances, 1); assert.ok(busy.disabled);
+      assert.equal(busy.resolution, '1080p');
+      assert.equal(busy.focused, 'export-cancel');
+      await pressKey(cancelled, 'Tab');
+      assert.equal(await cancelled.evaluate(() => document.activeElement.id), 'export-cancel');
+      await pressKey(cancelled, 'Escape');
+      assert.equal(await cancelled.evaluate(() => document.querySelector('#export-dialog').open), true);
+      await cancelled.evaluate(() => document.querySelector('#export-cancel').click());
+      await cancelled.waitForFunction(() => document.querySelector('#export-dialog').getAttribute('aria-busy') === 'false');
+      const state = await cancelled.evaluate(() => ({ frame: window.animation.frame, closed: window.encoderCloses, status: document.querySelector('#export-status').textContent, playEnabled: !document.querySelector('#play').disabled, errorHidden: document.querySelector('#export-error').hidden, focused: document.activeElement.id, settingsEnabled: !document.querySelector('#resolution button[aria-pressed="true"]').disabled, closeEnabled: !document.querySelector('#export-close').disabled }));
+      assert.equal(state.frame, 456); assert.equal(state.closed, 1); assert.ok(state.playEnabled && state.errorHidden); assert.match(state.status, /已取消/);
+      assert.ok(state.settingsEnabled && state.closeEnabled); assert.equal(state.focused, 'export-start');
+      assert.equal(cancelled.errors.length, 0);
+      return state;
+    } finally { await cancelled.close(); }
+  });
+
+  await check('Export dialog shows measured progress, retains completed downloads, and supports re-export', async () => {
+    const completed = await runtime.browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const directory = await mkdtemp(path.join(tmpdir(), 'astra-export-dialog-'));
+    // Replace only the exporter in this page with a gated, non-video fixture.
+    // This checks UI and actual repeated downloads without encoding a movie.
+    const fixtureSource = `
+      export async function getExportSupport() { return { '1080p': { supported: true, reason: '' }, '4k': { supported: true, reason: '' } }; }
+      export async function exportVideo({ resolution, signal, onProgress }) {
+        window.fixtureCalls = (window.fixtureCalls ?? 0) + 1;
+        (window.fixtureResolutions ??= []).push(resolution);
+        onProgress({ stage: 'preparing', completed: 0, total: 900 });
+        onProgress({ stage: 'rendering', completed: 333, total: 900 });
+        const gate = name => new Promise((resolve, reject) => {
+          window[name] = resolve;
+          signal.addEventListener('abort', () => reject(new DOMException('已取消导出。', 'AbortError')), { once: true });
+        });
+        await gate('finishFixtureFrames');
+        onProgress({ stage: 'finalizing', completed: 900, total: 900 });
+        await gate('finishFixtureMux');
+        return new Blob([new Uint8Array(2 * 1024 ** 2).fill(42)], { type: 'video/mp4' });
+      }
+    `;
+    try {
+      completed.on('Fetch.requestPaused', ({ requestId }) => {
+        void completed.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/javascript' }], body: Buffer.from(fixtureSource).toString('base64') }).catch(error => completed.errors.push(error.message));
+      });
+      await completed.send('Fetch.enable', { patterns: [{ urlPattern: '*src/browser-export.js', requestStage: 'Request' }] });
+      await completed.goto(runtime.url); await completed.evaluate(() => window.exportReady);
+      await completed.evaluate(() => {
+        window.exportUrls = []; window.revokedExportUrls = [];
+        const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+        URL.createObjectURL = blob => { const url = create(blob); window.exportUrls.push(url); return url; };
+        URL.revokeObjectURL = url => { window.revokedExportUrls.push(url); revoke(url); };
+        window.animation.seek(420);
+      });
+      await openExportDialog(completed);
+      await pressKey(completed, 'ArrowRight');
+      assert.deepEqual(await completed.evaluate(() => ({ selected: document.querySelector('#resolution button[aria-pressed="true"]').value, pressed: document.querySelectorAll('#resolution button[aria-pressed="true"]').length, focused: document.activeElement.id, filename: document.querySelector('#export-filename').textContent })), { selected: '4k', pressed: 1, focused: 'resolution-4k', filename: 'astra-motion-4k.mp4' });
+      const qualityLayout = await dialogLayout(completed, { width: 1440, height: 1000 }, 'export-quality-4k.png');
+      await pressKey(completed, 'Enter');
+      assert.equal(await completed.evaluate(() => document.querySelectorAll('#resolution button[aria-pressed="true"]').length), 1);
+      await pressKey(completed, 'ArrowLeft');
+      assert.equal(await completed.evaluate(() => document.querySelector('#resolution button[aria-pressed="true"]').value), '1080p');
+      const viewports = [{ width: 1440, height: 1000, name: 'desktop' }, { width: 390, height: 844, name: 'mobile' }, { width: 300, height: 700, name: 'narrow' }];
+      const layouts = [qualityLayout];
+      for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-settings-${viewport.name}.png`));
+      layouts.push(await dialogLayout(completed, { width: 300, height: 480 }, 'export-settings-short.png'));
+      await completed.evaluate(() => document.querySelector('#export-start').click());
+      await completed.waitForFunction(() => document.querySelector('#export-progress').value === 333);
+      const progress = await completed.evaluate(() => ({ state: document.querySelector('#export-dialog').dataset.state, percent: document.querySelector('#export-percent').value, progress: document.querySelector('#export-progress').value, settingsDisabled: [...document.querySelectorAll('#resolution button')].every(button => button.disabled), closeDisabled: document.querySelector('#export-close').disabled, cancelVisible: !document.querySelector('#export-cancel').hidden, status: document.querySelector('#export-status').textContent }));
+      assert.equal(progress.state, 'exporting'); assert.equal(progress.percent, '37%'); assert.equal(progress.progress, 333);
+      assert.ok(progress.settingsDisabled && progress.closeDisabled && progress.cancelVisible); assert.match(progress.status, /正在导出/);
+      for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-progress-${viewport.name}.png`));
+      await completed.evaluate(() => window.finishFixtureFrames());
+      await completed.waitForFunction(() => document.querySelector('#export-percent').value === '100%');
+      assert.match(await completed.evaluate(() => document.querySelector('#export-status').textContent), /封装 MP4/);
+      assert.equal(await completed.evaluate(() => document.querySelector('#download').hidden), true);
+      await completed.evaluate(() => window.finishFixtureMux());
+      await completed.waitForFunction(() => document.querySelector('#export-dialog').dataset.state === 'complete');
+      const ready = await completed.evaluate(() => ({ frame: window.animation.frame, playing: window.animation.playing, filename: document.querySelector('#download').dataset.filename, fileSize: document.querySelector('#export-size').textContent, downloadEnabled: !document.querySelector('#download').disabled && !document.querySelector('#download').hidden, againVisible: !document.querySelector('#export-again').hidden, closeEnabled: !document.querySelector('#export-close').disabled, focused: document.activeElement.id }));
+      assert.equal(ready.frame, 420); assert.equal(ready.playing, false); assert.equal(ready.filename, 'astra-motion-1080p.mp4');
+      assert.equal(ready.fileSize, '2.0 MB'); assert.ok(ready.downloadEnabled && ready.againVisible && ready.closeEnabled); assert.equal(ready.focused, 'download');
+      for (const viewport of viewports) layouts.push(await dialogLayout(completed, viewport, `export-complete-${viewport.name}.png`));
+      let firstDownload;
+      for (const attempt of ['first', 'repeat', 'reopen']) {
+        if (attempt === 'reopen') {
+          await pressKey(completed, 'Escape');
+          await completed.waitForFunction(() => !document.querySelector('#export-dialog').open && document.activeElement.id === 'export');
+          await openExportDialog(completed);
+          assert.equal(await completed.evaluate(() => document.querySelector('#export-dialog').dataset.state), 'complete');
+          assert.equal(await completed.evaluate(() => document.activeElement.id), 'download');
+        }
+        const downloadDirectory = path.join(directory, attempt);
+        await mkdir(downloadDirectory);
+        await completed.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDirectory });
+        await completed.evaluate(() => document.querySelector('#download').click());
+        const file = path.join(downloadDirectory, ready.filename), deadline = performance.now() + 15000;
+        while (true) {
+          try { if ((await stat(file)).size === 2 * 1024 ** 2) break; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          if (performance.now() > deadline) throw new Error(`Fixture download timed out: ${attempt}`);
+          await delay(50);
+        }
+        const bytes = await readFile(file);
+        if (firstDownload) assert.deepEqual(bytes, firstDownload, 'Repeated fixture download differs');
+        else firstDownload = bytes;
+      }
+      assert.deepEqual(await completed.evaluate(() => ({ calls: window.fixtureCalls, resolutions: window.fixtureResolutions, urls: window.exportUrls.length, revoked: window.revokedExportUrls.length })), { calls: 1, resolutions: ['1080p'], urls: 1, revoked: 0 });
+      await completed.evaluate(() => {
+        document.querySelector('#export-again').click();
+        const resolution = document.querySelector('#resolution-4k'); resolution.focus(); resolution.click();
+      });
+      const settings = await completed.evaluate(() => ({ state: document.querySelector('#export-dialog').dataset.state, filename: document.querySelector('#export-filename').textContent, dimensions: document.querySelector('#export-dimensions').textContent, enabled: !document.querySelector('#resolution button[aria-pressed="true"]').disabled, focused: document.activeElement.id }));
+      assert.equal(settings.state, 'settings'); assert.equal(settings.filename, 'astra-motion-4k.mp4'); assert.match(settings.dimensions, /3840 × 2160/); assert.ok(settings.enabled); assert.equal(settings.focused, 'resolution-4k');
+      await completed.evaluate(() => document.querySelector('#export-close').click());
+      await completed.waitForFunction(() => !document.querySelector('#export-dialog').open);
+      await openExportDialog(completed);
+      assert.equal(await completed.evaluate(() => document.querySelector('#export-dialog').dataset.state), 'complete', 'Closing new settings should retain the last downloadable result');
+      assert.equal(await completed.evaluate(() => document.querySelector('#export-filename').textContent), ready.filename);
+      await completed.evaluate(() => { document.querySelector('#export-again').click(); document.querySelector('#resolution-4k').click(); document.querySelector('#export-start').click(); });
+      await completed.waitForFunction(() => window.fixtureCalls === 2);
+      assert.deepEqual(await completed.evaluate(() => window.fixtureResolutions), ['1080p', '4k']);
+      assert.deepEqual(await completed.evaluate(() => ({ urls: window.exportUrls.length, revoked: window.revokedExportUrls })), { urls: 1, revoked: [await completed.evaluate(() => window.exportUrls[0])] });
+      await completed.evaluate(() => document.querySelector('#export-cancel').click());
+      await completed.waitForFunction(() => !window.animation.exporting);
+      assert.equal(await completed.evaluate(() => document.querySelector('#export-dialog').dataset.state), 'settings');
+      assert.equal(completed.errors.length, 0, completed.errors.join('\n'));
+      return { progress, ready, repeatedDownloads: 3, sameUrlRetainedOnReopen: true, reExportReleasesOldUrl: true, layouts };
+    } finally {
+      await completed.close(); await rm(directory, { recursive: true, force: true });
+    }
+  });
 
   await check('Font loading gates readiness in player and export modes', async () => {
     const results = [];
@@ -520,6 +825,24 @@ try {
 
   await check('Desktop layout preserves 16:9 and controls outside the image', () => layout(page, { width: 1440, height: 1000 }, 'desktop.png'));
   await check('Mobile layout preserves 16:9 with no horizontal overflow', () => layout(page, { width: 390, height: 844 }, 'mobile.png'));
+  await check('Narrow mobile layout keeps the top-right export entry inside the viewport', () => layout(page, { width: 300, height: 700 }, 'mobile-narrow.png'));
+  await check('Fullscreen retains the top-right export entry and opens its modal inside the viewport', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    try {
+      await page.evaluate(() => document.querySelector('.player').requestFullscreen());
+      const state = await page.evaluate(() => {
+        const canvas = document.querySelector('#film').getBoundingClientRect(), controls = document.querySelector('.controls').getBoundingClientRect(), entry = document.querySelector('#export').getBoundingClientRect(), heading = document.querySelector('.heading').getBoundingClientRect();
+        return { canvasTop: canvas.top, canvasBottom: canvas.bottom, controlsTop: controls.top, controlsBottom: controls.bottom, entryTop: entry.top, entryBottom: entry.bottom, entryRight: entry.right, headingRight: heading.right, width: innerWidth, height: innerHeight, overflow: document.documentElement.scrollWidth > innerWidth };
+      });
+      assert.ok(state.entryTop >= 0 && state.entryBottom <= state.canvasTop && state.canvasBottom <= state.controlsTop && state.controlsBottom <= state.height);
+      assert.ok(Math.abs(state.entryRight - state.headingRight) < 1 && state.entryRight <= state.width);
+      assert.equal(state.overflow, false);
+      await openExportDialog(page);
+      const dialog = await dialogLayout(page, { width: 1440, height: 1000 }, 'export-fullscreen.png');
+      assert.equal(await page.evaluate(() => !!document.fullscreenElement), true);
+      return { ...state, dialog };
+    } finally { await page.evaluate(() => { document.querySelector('#export-close').click(); return document.exitFullscreen(); }); }
+  });
 
   await check('Export mode uses the same pixels at native 1920×1080', async () => {
     const exportPage = await runtime.browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });

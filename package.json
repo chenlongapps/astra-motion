@@ -11,6 +11,7 @@
     "build": "node scripts/build.mjs",
     "preview": "node scripts/serve.mjs --preview",
     "generate:audio": "node scripts/generate-audio.mjs",
+    "generate:export-audio": "node scripts/export-audio.mjs",
     "render": "node scripts/render.mjs",
     "render:1080p": "node scripts/render.mjs --resolution=1080p",
     "render:4k": "node scripts/render.mjs --resolution=4k",
@@ -20,6 +21,7 @@
     "test": "node --test scripts/*.test.mjs",
     "test:render": "node --test scripts/*.test.mjs",
     "verify": "node scripts/verify.mjs",
+    "verify:export": "node scripts/verify-browser-export.mjs",
     "verify:frames": "node scripts/verify-frames.mjs",
     "verify:video": "node scripts/verify-video.mjs",
     "verify:audio": "node scripts/verify-audio.mjs"

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, copyFile, rename, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import timing from '../src/timing.json' with { type: 'json' };
 import backgroundConfig from './audio/background.json' with { type: 'json' };
 import { compose } from './audio/score.mjs';
 import { SAMPLE_RATE, renderSoundtrack, floatWav, readPcmWav } from './audio/synth.mjs';
+import { exportAudioNames, prepareExportAudio, publishAudioFiles } from './export-audio.mjs';
 
 const run = promisify(execFile);
 export const root = fileURLToPath(new URL('../', import.meta.url));
@@ -56,9 +57,8 @@ export async function prepareSoundtrack({ sourceFile = backgroundFile } = {}) {
   };
 }
 
-export async function generateAudio({ file = soundtrack, reportFile = path.join(root, 'output/audio-generation.json'), sourceFile = backgroundFile } = {}) {
+export async function generateAudio({ file = soundtrack, reportFile = path.join(root, 'output/audio-generation.json'), sourceFile = backgroundFile, exportFiles = file === soundtrack } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'astra-motion-audio-'));
-  const partial = `${file}.${path.basename(directory)}.partial.wav`;
   try {
     const { score, mix, effects, background } = await prepareSoundtrack({ sourceFile });
     const raw = path.join(directory, 'mix.wav'), master = path.join(directory, 'master.wav');
@@ -81,13 +81,18 @@ export async function generateAudio({ file = soundtrack, reportFile = path.join(
       effectsPcmSha256: pcmHash(floatWav(effects).subarray(44)),
       cues: score.groups.map(({ cue, frame, time, duration }) => ({ cue, frame, time, duration, sample: Math.round(time * SAMPLE_RATE) })),
     };
-    await mkdir(path.dirname(file), { recursive: true });
-    await copyFile(master, partial); await rename(partial, file);
-    if (reportFile) { await mkdir(path.dirname(reportFile), { recursive: true }); await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n'); }
+    const files = [{ file, bytes }];
+    if (exportFiles) {
+      const browserAudio = await prepareExportAudio(master, directory);
+      const audioFile = path.join(path.dirname(file), exportAudioNames.m4a);
+      files.push({ file: audioFile, bytes: browserAudio.m4a }, { file: path.join(path.dirname(file), exportAudioNames.manifest), bytes: browserAudio.manifestBytes });
+      report.browserExport = { file: path.relative(root, audioFile), ...browserAudio.manifest };
+    }
+    if (reportFile) files.push({ file: reportFile, bytes: Buffer.from(JSON.stringify(report, null, 2) + '\n') });
+    await publishAudioFiles(files);
     return report;
   } finally {
     await rm(directory, { recursive: true, force: true });
-    await rm(partial, { force: true });
   }
 }
 
