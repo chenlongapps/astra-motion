@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Generated build and render output
+/dist/
+/output/
+/.build-*/
+
+# Local browser tooling artifacts
+/.playwright-cli/
+
+# Operating-system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# Package-manager logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*

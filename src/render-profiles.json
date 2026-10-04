@@ -1,0 +1,4 @@
+{
+  "1080p": { "width": 1920, "height": 1080, "bitrate": "12M" },
+  "4k": { "width": 3840, "height": 2160, "bitrate": "48M" }
+}

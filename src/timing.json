@@ -1,0 +1,16 @@
+{
+  "fps": 30,
+  "frames": 900,
+  "cues": {
+    "audio": 36, "sun": 47, "coffee": 62, "cat": 77, "dance": 92,
+    "sunLand": 60, "coffeeLand": 75, "catLand": 90, "danceLand": 105,
+    "scissors": 132, "cut": 150, "snip": 151, "throw": 166, "closeGap": 186,
+    "transitions": 243, "spinReach": 260, "spin": 286, "tumble": 300,
+    "whoosh": 353, "textTab": 360, "textPanel": 362, "wait": 376, "for": 391, "typo": 406,
+    "notice": 415, "correctReach": 431, "swap": 442, "corrected": 449, "fixed": 449, "gold": 465,
+    "adjustments": 488, "sparkle": 504, "maxShake": 522, "shakeLabel": 524, "shakeLabelEnd": 569, "calm": 570,
+    "nobody": 578, "zoom": 592, "beatDance": 604, "onBeat": 685,
+    "exportReach": 690, "exportStart": 705, "exportDone": 732, "exportEnd": 735,
+    "finale": 738, "social": 745, "nailed": 826, "signature": 843
+  }
+}
