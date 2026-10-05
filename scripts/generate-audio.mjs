@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -15,8 +15,47 @@ const run = promisify(execFile);
 export const root = fileURLToPath(new URL('../', import.meta.url));
 export const soundtrack = path.join(root, 'public/audio/generated.wav');
 export const backgroundFile = fileURLToPath(new URL(`./audio/${backgroundConfig.file}`, import.meta.url));
+export const defaultReportFile = path.join(root, 'output/audio-generation.json');
+// Everything that changes the rendered PCM: the imported recording, the
+// authored timing and any synthesis or web-export code that consumes them.
+const audioDirectory = 'scripts/audio';
+const audioSourceFiles = ['src/timing.json', 'scripts/export-audio.mjs', ...(await readdir(path.join(root, audioDirectory))).sort().map(name => `${audioDirectory}/${name}`)];
 export const pcmHash = data => createHash('sha256').update(data).digest('hex');
 export { timing };
+
+async function hashFiles(files) {
+  const hash = createHash('sha256');
+  for (const file of files) {
+    hash.update(`${file}\0`);
+    hash.update(await readFile(path.join(root, file)));
+  }
+  return hash.digest('hex');
+}
+
+// Fingerprint of everything that shapes the rendered PCM, exposed for tests.
+export const audioSourceHash = () => hashFiles(audioSourceFiles);
+
+// Re-rendering the soundtrack costs minutes of CPU and produces the very same
+// bytes when nothing it depends on changed. Reuse the previous generation only
+// while the sources, the rendered PCM and the web export all still agree, so a
+// stale or hand-edited asset is always regenerated.
+export async function reusableAudioReport({ file = soundtrack, reportFile = defaultReportFile, sourceFile = backgroundFile, force = false } = {}) {
+  if (force) return null;
+  let report;
+  try { report = JSON.parse(await readFile(reportFile, 'utf8')); } catch { return null; }
+  try {
+    if (report.audioSha256 !== await hashFiles(audioSourceFiles)) return null;
+    if (report.background?.sourceSha256 !== pcmHash(await readFile(sourceFile))) return null;
+    const wav = await readFile(file), pcm = readPcmWav(wav);
+    if (pcm.sampleRate !== SAMPLE_RATE || pcm.channels !== 2 || pcm.bits !== 16 || pcm.samples !== timing.frames / timing.fps * SAMPLE_RATE) return null;
+    if (pcmHash(pcm.data) !== report.pcmSha256) return null;
+    // The web export is derived from this WAV; keep it in step with the cache.
+    const manifest = JSON.parse(await readFile(path.join(path.dirname(file), exportAudioNames.manifest), 'utf8'));
+    if (manifest.version !== 1 || manifest.wavSha256 !== pcmHash(wav) || manifest.m4aSha256 !== pcmHash(await readFile(path.join(path.dirname(file), exportAudioNames.m4a)))) return null;
+    if (manifest.fps !== timing.fps || manifest.frames !== timing.frames) return null;
+  } catch { return null; }
+  return { ...report, reused: true };
+}
 
 function loudnessJson(stderr) {
   const text = stderr.match(/\{\s*"input_i"[\s\S]*?\}/g)?.at(-1);
@@ -57,7 +96,9 @@ export async function prepareSoundtrack({ sourceFile = backgroundFile } = {}) {
   };
 }
 
-export async function generateAudio({ file = soundtrack, reportFile = path.join(root, 'output/audio-generation.json'), sourceFile = backgroundFile, exportFiles = file === soundtrack } = {}) {
+export async function generateAudio({ file = soundtrack, reportFile = defaultReportFile, sourceFile = backgroundFile, exportFiles = file === soundtrack, force = false } = {}) {
+  const reused = await reusableAudioReport({ file, reportFile, sourceFile, force });
+  if (reused) return reused;
   const directory = await mkdtemp(path.join(tmpdir(), 'astra-motion-audio-'));
   try {
     const { score, mix, effects, background } = await prepareSoundtrack({ sourceFile });
@@ -75,6 +116,7 @@ export async function generateAudio({ file = soundtrack, reportFile = path.join(
     const report = {
       generatedAt: new Date().toISOString(), source: 'User-provided background recording mixed with existing procedural action effects',
       file: path.relative(root, file), background,
+      audioSha256: await hashFiles(audioSourceFiles),
       format: { sampleRate: pcm.sampleRate, channels: pcm.channels, bits: pcm.bits, samplesPerChannel: pcm.samples, duration: pcm.duration },
       pcmSha256: pcmHash(pcm.data), loudness: { integratedLufs: final.input_i, truePeakDbtp: final.input_tp, loudnessRangeLu: final.input_lra },
       voices: { music: 0, recordedBackgrounds: 1, effects: score.effects.length },
@@ -97,7 +139,12 @@ export async function generateAudio({ file = soundtrack, reportFile = path.join(
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const report = await generateAudio();
-  console.log(`Generated ${report.file}: ${report.format.duration}s / 48 kHz stereo / imported BGM / ${report.cues.length} action cues.`);
-  console.log(`Master: ${report.loudness.integratedLufs} LUFS, ${report.loudness.truePeakDbtp} dBTP. PCM SHA-256: ${report.pcmSha256}`);
+  const force = process.argv.includes('--force');
+  const report = await generateAudio({ force });
+  if (report.reused) {
+    console.log(`Reused ${report.file}: sources unchanged since ${report.generatedAt}; PCM SHA-256: ${report.pcmSha256}. Pass --force to regenerate.`);
+  } else {
+    console.log(`Generated ${report.file}: ${report.format.duration}s / 48 kHz stereo / imported BGM / ${report.cues.length} action cues.`);
+    console.log(`Master: ${report.loudness.integratedLufs} LUFS, ${report.loudness.truePeakDbtp} dBTP. PCM SHA-256: ${report.pcmSha256}`);
+  }
 }

@@ -1,10 +1,11 @@
+import { availableParallelism } from 'node:os';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
-import { output, selectFrameRate, selectRenderOptions, selectResolution } from './render-options.mjs';
+import { MAX_WORKERS, output, selectFrameRate, selectRenderOptions, selectResolution, selectWorkerCount } from './render-options.mjs';
 import { checkFrameCache, pngDimensions, writeFrameCacheMetadata } from './frame-cache.mjs';
 
 function pngFixture({ width, height }) {
@@ -44,8 +45,8 @@ test('missing, unsupported, and repeated resolution options fail explicitly', ()
   }
 });
 
-test('frame rates default to 60 and isolate all resolution/rate output directories', () => {
-  assert.equal(selectFrameRate(), 60);
+test('frame rates default to 30 and isolate all resolution/rate output directories', () => {
+  assert.equal(selectFrameRate(), 30);
   const outputs = new Set();
   for (const resolution of ['1080p', '4k']) for (const fps of [30, 60]) {
     const profile = selectRenderOptions([`--resolution=${resolution}`, `--fps=${fps}`]);
@@ -54,12 +55,26 @@ test('frame rates default to 60 and isolate all resolution/rate output directori
     outputs.add(profile.output);
   }
   assert.equal(outputs.size, 4);
-  assert.equal(selectRenderOptions().fps, 60);
+  assert.equal(selectRenderOptions().fps, 30);
 });
 
 test('missing, malformed, unsupported, and duplicate frame rates are rejected', () => {
   for (const args of [['--fps'], ['--fps='], ['--fps=24'], ['--fps=120'], ['--fps=30.0'], ['--fps=3e1'], ['--fps= 60'], ['--fps=NaN'], ['--fps=60', '--fps=60'], ['--fps=30', '--fps=60']]) {
     assert.throws(() => selectRenderOptions(args), /--fps/);
+  }
+});
+
+test('worker counts default from the machine and stay inside the supported range', () => {
+  assert.equal(selectWorkerCount(), Math.max(1, Math.min(MAX_WORKERS, Math.round(availableParallelism() / 2))));
+  for (const value of [1, 2, 3]) assert.equal(selectWorkerCount([`--workers=${value}`]), value);
+  assert.equal(selectWorkerCount([], { parallelism: 2 }), 1);
+  assert.equal(selectWorkerCount([], { parallelism: 3 }), 2);
+  assert.equal(selectWorkerCount([], { parallelism: 8 }), 4);
+  assert.equal(selectWorkerCount([], { parallelism: 16 }), 4);
+  assert.equal(selectWorkerCount(['--workers=4'], { parallelism: 2 }), 4);
+  assert.equal(selectRenderOptions(['--workers=2']).workers, 2);
+  for (const args of [['--workers'], ['--workers='], ['--workers=0'], ['--workers=-1'], ['--workers=5'], ['--workers=two'], ['--workers= 2'], ['--workers=2', '--workers=3']]) {
+    assert.throws(() => selectWorkerCount(args), /--workers/);
   }
 });
 

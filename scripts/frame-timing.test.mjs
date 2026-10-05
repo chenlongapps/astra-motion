@@ -7,8 +7,8 @@ import referenceCamera from '../src/reference-camera.json' with { type: 'json' }
 import { cameraAt, referenceCameraAt } from '../src/timeline.js';
 
 test('both output rates cover exactly 30 seconds and invalid rates fail', () => {
-  assert.deepEqual(frameTiming(), { fps: 60, frames: 1800, duration: 30 });
-  assert.deepEqual(frameTiming(30), { fps: 30, frames: 900, duration: 30 });
+  assert.deepEqual(frameTiming(), { fps: 30, frames: 900, duration: 30 });
+  assert.deepEqual(frameTiming(60), { fps: 60, frames: 1800, duration: 30 });
   for (const fps of [0, 24, 59.94, 120, NaN, Infinity, '60', null]) assert.throws(() => frameTiming(fps), /30.*60/);
 });
 

@@ -42,7 +42,7 @@ npm run preview  # serve dist/ at http://127.0.0.1:4173/
 
 #### Browser Export
 
-Click the **Export** button in the top-right corner of the player to pick 1080p / 4K and 30 / 60 fps. By default it produces a 1080p60 MP4 with the soundtrack. An HTTPS or localhost context is required, along with WebCodecs support for H.264 encoding. Supported quality and frame-rate combinations are detected per device, and the download filename includes the frame rate.
+Click the **Export** button in the top-right corner of the player to pick 1080p / 4K and 30 / 60 fps. By default it produces a 1080p30 MP4 with the soundtrack. An HTTPS or localhost context is required, along with WebCodecs support for H.264 encoding. Supported quality and frame-rate combinations are detected per device, and the download filename includes the frame rate.
 
 Local rendering, soundtrack generation, verification, and animation notes live in `AGENTS.md`.
 

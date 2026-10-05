@@ -34,8 +34,8 @@
             <figcaption><span>当前画面</span><span id="export-preview-frame">第 1 帧</span></figcaption>
           </figure>
           <section class="export-settings" aria-label="导出设置">
-            <dl class="export-file"><dt>文件名</dt><dd id="export-filename">astra-motion-1080p-60fps.mp4</dd></dl>
-            <dl class="export-specs"><div><dt>格式</dt><dd>MP4</dd></div><div><dt>时长</dt><dd>30 秒</dd></div><div><dt>帧率</dt><dd id="export-frame-rate">60 fps</dd></div></dl>
+            <dl class="export-file"><dt>文件名</dt><dd id="export-filename">astra-motion-1080p-30fps.mp4</dd></dl>
+            <dl class="export-specs"><div><dt>格式</dt><dd>MP4</dd></div><div><dt>时长</dt><dd>30 秒</dd></div><div><dt>帧率</dt><dd id="export-frame-rate">30 fps</dd></div></dl>
             <div id="export-quality" class="export-quality">
               <p id="resolution-label" class="export-quality-label">画质</p>
               <div id="resolution" class="resolution-options" role="group" aria-labelledby="resolution-label" aria-describedby="export-dimensions">
@@ -44,15 +44,15 @@
               </div>
               <p id="fps-label" class="export-quality-label fps-label">帧率</p>
               <div id="export-fps" class="resolution-options" role="group" aria-labelledby="fps-label">
-                <button id="fps-30" class="resolution-option" type="button" value="30" aria-pressed="false" disabled><span>30 fps</span><span class="resolution-note">900 帧</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
-                <button id="fps-60" class="resolution-option" type="button" value="60" aria-pressed="true" disabled><span>60 fps</span><span class="resolution-note">1800 帧</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+                <button id="fps-30" class="resolution-option" type="button" value="30" aria-pressed="true" disabled><span>30 fps</span><span class="resolution-note">900 帧</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+                <button id="fps-60" class="resolution-option" type="button" value="60" aria-pressed="false" disabled><span>60 fps</span><span class="resolution-note">1800 帧</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
               </div>
             </div>
             <p id="export-dimensions">1920 × 1080</p>
             <div id="export-result" class="export-result" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg><div><p>导出完成</p><span id="export-size"></span></div></div>
             <div class="export-feedback">
               <div class="export-status-row"><p id="export-status" role="status">正在检查导出能力…</p><output id="export-percent" hidden>0%</output></div>
-              <div id="export-progress-panel" hidden><progress id="export-progress" max="1800" value="0" aria-label="视频导出进度"></progress></div>
+              <div id="export-progress-panel" hidden><progress id="export-progress" max="900" value="0" aria-label="视频导出进度"></progress></div>
               <p id="export-error" role="alert" hidden></p>
             </div>
           </section>

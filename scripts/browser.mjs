@@ -39,12 +39,19 @@ export class Cdp extends EventEmitter {
         else command.resolve(message.result);
       } else this.emit(message.method, message.params);
     });
-    const disconnected = () => {
-      for (const command of this.pending.values()) { clearTimeout(command.timer); command.reject(new Error(`Browser disconnected during ${command.method}`)); }
-      this.pending.clear();
-    };
+    // A browser that dies can leave its DevTools sockets half open. Reject
+    // every waiting command instead of blocking the export on a reply that
+    // will never arrive, whether the socket closed or the process exited.
+    const disconnected = () => this.failPending();
     socket.addEventListener('close', disconnected);
     socket.addEventListener('error', disconnected);
+  }
+  failPending(reason) {
+    for (const command of this.pending.values()) {
+      clearTimeout(command.timer);
+      command.reject(new Error(`Browser disconnected during ${command.method}${reason ? `: ${reason}` : ''}`));
+    }
+    this.pending.clear();
   }
   static async connect(url) {
     const socket = new WebSocket(url);
@@ -151,6 +158,12 @@ export async function launchBrowser() {
   child.on('error', error => { launchError = error; });
   child.stderr.on('data', data => { stderr = (stderr + data).slice(-4000); });
   const exit = new Promise(resolve => { child.once('close', () => { exited = true; resolve(); }); });
+  // Chrome can be killed without closing its DevTools sockets. Unblock every
+  // page the moment the browser process is gone, so an interrupted export fails
+  // with a diagnostic instead of waiting forever for a CDP reply.
+  child.on('exit', () => {
+    for (const page of browser.pages) page.connection.failPending('the browser process exited');
+  });
   const browser = {
     pages: new Set(), endpoint: '',
     async newPage({ viewport = { width: 1280, height: 720 } } = {}) {
@@ -193,6 +206,49 @@ export async function launchBrowser() {
     }
     throw new Error(`Chrome startup timed out. ${stderr}`);
   } catch (error) { await browser.close(); throw error; }
+}
+
+// Several render pages share one browser and one static server. Each page runs
+// its own deterministic renderer, so frames rendered in parallel are identical
+// to the frames a single page would produce for the same index.
+export async function openRenderPages({ count = 1, resolution = selectResolution(), fps = resolution.fps ?? DEFAULT_FPS, width = resolution.width, height = resolution.height, handleSignals = true } = {}) {
+  frameTiming(fps);
+  const pages = Math.max(1, Math.floor(count));
+  const server = await createStaticServer();
+  let browser, closing;
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  const interrupt = () => { void close(); };
+  function close() {
+    closing ??= (async () => {
+      for (const signal of signals) process.removeListener(signal, interrupt);
+      try { await browser?.close(); } finally { await server.close(); }
+    })();
+    return closing;
+  }
+  try {
+    browser = await launchBrowser();
+    if (handleSignals) for (const signal of signals) process.once(signal, interrupt);
+    const opened = [];
+    try {
+      for (let page = 0; page < pages; page++) {
+        // A large page can wait behind the other pages, so give its commands
+        // room without turning a real stall into a hang.
+        const view = await browser.newPage({ viewport: { width, height } });
+        view.setDefaultTimeout(60000);
+        await view.goto(`${server.url}?fps=${fps}&render&resolution=${resolution.name}`);
+        await view.evaluate(() => window.animationReady);
+        opened.push(view);
+      }
+    } catch (error) {
+      for (const view of opened) await view.close().catch(() => {});
+      throw error;
+    }
+    return {
+      page: opened[0], pages: opened, browser, server, url: server.url, workers: pages,
+      get errors() { return opened.flatMap(view => view.errors); },
+      close,
+    };
+  } catch (error) { await close(); throw error; }
 }
 
 export async function openRenderer({ render = true, resolution = selectResolution(), fps = resolution.fps ?? DEFAULT_FPS, width = resolution.width, height = resolution.height, handleSignals = true } = {}) {

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { frameTiming, parseFps } from '../src/frame-timing.js';
@@ -27,7 +28,23 @@ export function selectFrameRate(args = []) {
   catch (error) { throw new Error(`Use --fps=30 or --fps=60. ${error.message}`, { cause: error }); }
 }
 
+export const MAX_WORKERS = 4;
+
+// Parallel capture divides the pixel work of one export across render pages
+// that all draw the same deterministic frames. Rendering and PNG compression
+// scale across cores while the encoder needs only a few threads, so half of the
+// machine's parallelism is a good default: 4 pages on an 8-core laptop, 2 on a
+// smaller one, and never more than MAX_WORKERS.
+export function selectWorkerCount(args = [], { parallelism = availableParallelism() } = {}) {
+  const value = option(args, '--workers');
+  if (value === undefined) return Math.max(1, Math.min(MAX_WORKERS, Math.round(parallelism / 2)));
+  if (!/^\d+$/.test(value)) throw new Error('Use --workers=1, 2, 3 or 4.');
+  const workers = Number(value);
+  if (workers < 1 || workers > MAX_WORKERS) throw new Error(`Use --workers=1 to ${MAX_WORKERS}.`);
+  return workers;
+}
+
 export function selectRenderOptions(args = []) {
   const resolution = selectResolution(args), timing = frameTiming(selectFrameRate(args));
-  return { ...resolution, ...timing, output: path.join(resolution.output, `${timing.fps}fps`) };
+  return { ...resolution, ...timing, workers: selectWorkerCount(args), output: path.join(resolution.output, `${timing.fps}fps`) };
 }

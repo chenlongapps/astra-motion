@@ -32,7 +32,7 @@ export function pngDimensions(header) {
 
 // Inspect every PNG before encoding or partially refreshing a cached sequence.
 // Serial metadata reads keep memory bounded even for full-size 4K sequences.
-export async function checkFrameCache(directory, profile, count = profile.frames, { allowStaleSource = false } = {}) {
+export async function checkFrameCache(directory, profile, count = profile.frames, { allowStaleSource = false, onProgress = () => {} } = {}) {
   const { width, height } = profile;
   if (profile.fps !== undefined) {
     try {
@@ -47,6 +47,7 @@ export async function checkFrameCache(directory, profile, count = profile.frames
     }
   }
   for (let frame = 0; frame < count; frame++) {
+    if (frame % 128 === 0 || frame === count - 1) onProgress(frame + 1);
     const file = path.join(directory, `${String(frame).padStart(4, '0')}.png`);
     try {
       const handle = await open(file, 'r');

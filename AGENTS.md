@@ -17,14 +17,16 @@
 - `npm run build`：检查源 JavaScript 语法，并将可部署文件复制到 `dist/`。
 - `npm run preview`：在 4173 端口预览 `dist/`。
 - `npm test`：运行单元测试；`npm run test:render` 是它的别名。
-- `npm run verify`：运行浏览器集成检查，并将报告和截图写入 `output/`；需要已安装 Chrome/Chromium。`npm run verify -- --fps=30` 跑 30 fps 播放回归；有成片时用 `npm run verify:video` 验证视频。
+- `npm run verify`：运行浏览器集成检查，并将报告和截图写入 `output/`；需要已安装 Chrome/Chromium。`npm run verify -- --fps=60` 跑 60 fps 播放回归；有成片时用 `npm run verify:video` 验证视频。
 - `npm run generate:audio` / `npm run verify:audio`：重新生成或验证配乐；需要 FFmpeg。背景录音取 `scripts/audio/background.m4a` 前 30 秒，动作音效由代码合成，时刻以 `src/timing.json` 为准；修改时间轴后重新运行这两个命令。
 - 本地导出需要系统 Chrome/Chromium、FFmpeg 和 FFprobe，仅在需要新成片时运行。未经用户明确要求，不要主动导出视频；仅在用户要求导出或明确需要生成新视频时执行。
-  - `npm run render`：默认 1080p60，输出 `output/60fps/astra-motion.mp4`。
-  - `npm run render:4k`：4K60，输出 `output/4k/60fps/astra-motion.mp4`。
-  - `npm run render -- --fps=30`：1080p30，输出 `output/30fps/astra-motion.mp4`；`--resolution=4k --fps=30` 为 4K30。
+  - `npm run render`：默认 1080p30，输出 `output/30fps/astra-motion.mp4`。
+  - `npm run render:4k`：4K30，输出 `output/4k/30fps/astra-motion.mp4`。
+  - `npm run render -- --fps=60`：1080p60，输出 `output/60fps/astra-motion.mp4`；`--resolution=4k --fps=60` 为 4K60。
   - `npm run render -- --gpu --bitrate=16M`：macOS 硬件编码示例。
+  - 抓帧默认按机器并行度开多个渲染页（默认 ≤4，`--workers=1` 可回到单页串行；帧仍按帧号顺序写入编码器与缓存）。配乐在背景录音、时间轴与合成源码未变时复用上次成品，`node scripts/generate-audio.mjs --force` 可强制重算。
   - `npm run render:samples` 只生成采样图；`npm run render:frames` 导出并保留 PNG 帧；`npm run render:from-frames` 复用帧缓存导出。以上命令均支持 `--fps=30` / `--fps=60`；通过 `CHROMIUM_PATH` 可指定浏览器可执行文件。
+  - 导出按阶段输出进度与预估（`audio` → `cache` → `browser` → `capture` → `encode` → `validate`，采样/局部刷新只走其中几步）：交互终端单行原地刷新，管道或 CI 中每 5 秒一行。内容含当前阶段、帧进度与百分比、实测速度、已用、剩余预估、全流程预计总时长与预计完成时刻，预热阶段显示 `estimating`。ETA 先以上次同配置导出的 `ffprobe.json` 计时为种子，再按实测速率修正；编码收尾阶段解析 FFmpeg `-progress` 输出显示已编码帧数。实现见 `scripts/render-progress.mjs`。
   - 输出与缓存按分辨率、帧率分目录，缓存清单校验尺寸、帧率、总帧数及渲染源码/字体指纹。旧的无清单缓存需重新生成；修改视觉内容后重新生成完整缓存，或使用 `--refresh-frames=START:END` 局部刷新，再运行 `npm run verify:frames -- --resolution=1080p --fps=60` 验证全部像素并更新清单。所有帧号均按所选输出帧率解释。
 
 ## 系统依赖
@@ -61,7 +63,7 @@ Chrome 查找顺序见 `scripts/browser.mjs`：`CHROMIUM_PATH` 环境变量 → 
 
 ## 动画与资源指南
 
-保持帧渲染结果确定：30 秒，默认 60 fps / 1800 帧（`0–1799`），可选 30 fps / 900 帧（`0–899`）。`src/timing.json` 中的 `fps`、`frames`、`cues` 为 30 fps 编排时基，输出帧率由 `defaultFps`、`supportedFps` 和 `src/frame-timing.js` 管理；渲染入口将输出帧换算为编排帧，并对校准数据与连续动画插值。通过 `src/timing.json` 协调动作时刻调整，并重新生成受影响的音频。输出与帧缓存按分辨率和帧率隔离；视觉内容变更后重新构建过期缓存，局部刷新后须用 `verify:frames` 完整验像素再更新清单。保留校准 JSON、字体许可证以及 `THIRD_PARTY.md` 中的署名信息。
+保持帧渲染结果确定：30 秒，默认 30 fps / 900 帧（`0–899`），可选 60 fps / 1800 帧（`0–1799`）。`src/timing.json` 中的 `fps`、`frames`、`cues` 为 30 fps 编排时基，输出帧率由 `defaultFps`、`supportedFps` 和 `src/frame-timing.js` 管理；渲染入口将输出帧换算为编排帧，并对校准数据与连续动画插值。通过 `src/timing.json` 协调动作时刻调整，并重新生成受影响的音频。输出与帧缓存按分辨率和帧率隔离；视觉内容变更后重新构建过期缓存，局部刷新后须用 `verify:frames` 完整验像素再更新清单。保留校准 JSON、字体许可证以及 `THIRD_PARTY.md` 中的署名信息。
 
 关键路径：`src/renderer.js` 负责合成、角色动作、字效、片尾；`src/timeline.js` 负责镜头、字幕、预览切换；`src/character.js` / `src/editor.js` / `src/media.js` 负责角色、剪辑室、素材。
 
